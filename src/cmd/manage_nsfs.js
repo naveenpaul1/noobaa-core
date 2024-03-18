@@ -32,8 +32,9 @@ function throw_cli_error(error_code, detail, event_arg) {
         new NoobaaEvent(error_event).create_event(undefined, event_arg, undefined);
     }
     const err = new ManageCLIError(error_code).to_string(detail);
-    process.stdout.write(err + '\n');
-    process.exit(1);
+    process.stdout.write(err + '\n', () => {
+        process.exit(1);
+    });
 }
 
 function write_stdout_response(response_code, detail, event_arg) {
@@ -42,8 +43,9 @@ function write_stdout_response(response_code, detail, event_arg) {
         new NoobaaEvent(response_event).create_event(undefined, event_arg, undefined);
     }
     const res = new ManageCLIResponse(response_code).to_string(detail);
-    process.stdout.write(res + '\n');
-    process.exit(0);
+    process.stdout.write(res + '\n', () => {
+        process.exit(0);
+    });
 }
 
 const buckets_dir_name = '/buckets';
@@ -114,6 +116,7 @@ async function main(argv = minimist(process.argv.slice(2))) {
         }
     } catch (err) {
         dbg.log1('NSFS Manage command: exit on error', err.stack || err);
+        console.log("SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS")
         const manage_err = ((err instanceof ManageCLIError) && err) ||
             new ManageCLIError(ManageCLIError.FS_ERRORS_TO_MANAGE[err.code] ||
                 ManageCLIError.RPC_ERROR_TO_MANAGE[err.rpc_code] ||
@@ -686,9 +689,16 @@ async function get_options_from_file(file_path) {
         const input_options_with_data = await native_fs_utils.read_file(fs_context, file_path);
         return input_options_with_data;
     } catch (err) {
-        if (err.code === 'ENOENT') throw_cli_error(ManageCLIError.InvalidFilePath, file_path);
-        if (err instanceof SyntaxError) throw_cli_error(ManageCLIError.InvalidJSONFile, file_path);
-        throw err;
+        if (err.code === 'ENOENT'){
+            throw_cli_error(ManageCLIError.InvalidFilePath, file_path);
+            return {};
+        } 
+        else if (err instanceof SyntaxError) {
+            throw_cli_error(ManageCLIError.InvalidJSONFile, file_path);
+            return {};
+        } else {
+            throw err;
+        }
     }
 }
 
@@ -730,33 +740,49 @@ function get_access_keys(action, user_input) {
  */
 async function validate_bucket_args(data, action) {
     if (action === ACTIONS.DELETE || action === ACTIONS.STATUS) {
-        if (_.isUndefined(data.name)) throw_cli_error(ManageCLIError.MissingBucketNameFlag);
+        if (_.isUndefined(data.name)) {
+            throw_cli_error(ManageCLIError.MissingBucketNameFlag);
+            return;
+        }
     } else {
-        if (_.isUndefined(data.name)) throw_cli_error(ManageCLIError.MissingBucketNameFlag);
+        if (_.isUndefined(data.name)) {
+            throw_cli_error(ManageCLIError.MissingBucketNameFlag);
+            return;
+        }
         try {
             native_fs_utils.validate_bucket_creation({ name: data.name });
         } catch (err) {
             throw_cli_error(ManageCLIError.InvalidBucketName, data.name);
+            return;
         }
         if (!_.isUndefined(data.new_name)) {
-            if (action !== ACTIONS.UPDATE) throw_cli_error(ManageCLIError.InvalidNewNameBucketIdentifier);
+            if (action !== ACTIONS.UPDATE) {
+                throw_cli_error(ManageCLIError.InvalidNewNameBucketIdentifier);
+                return;
+            }
             try {
                 native_fs_utils.validate_bucket_creation({ name: data.new_name });
             } catch (err) {
                 throw_cli_error(ManageCLIError.InvalidBucketName, data.new_name);
+                return;
             }
         }
-        if (_.isUndefined(data.system_owner)) throw_cli_error(ManageCLIError.MissingBucketOwnerFlag);
+        if (_.isUndefined(data.system_owner)) {
+            throw_cli_error(ManageCLIError.MissingBucketOwnerFlag);
+            return;
+        }
         if (!data.path) throw_cli_error(ManageCLIError.MissingBucketPathFlag);
         // fs_backend='' used for deletion of the fs_backend property
         if (data.fs_backend !== undefined && !['GPFS', 'CEPH_FS', 'NFSv4'].includes(data.fs_backend)) {
             throw_cli_error(ManageCLIError.InvalidFSBackend);
+            return;
         }
         // in case we have the fs_backend it changes the fs_context that we use for the path
         const fs_context_fs_backend = native_fs_utils.get_process_fs_context(data.fs_backend);
         const exists = await native_fs_utils.is_path_exists(fs_context_fs_backend, data.path);
         if (!exists) {
             throw_cli_error(ManageCLIError.InvalidStoragePath, data.path);
+            return;
         }
         if (data.s3_policy) {
             try {
@@ -788,26 +814,45 @@ async function validate_account_args(data, action) {
     if (action === ACTIONS.STATUS || action === ACTIONS.DELETE) {
         if (_.isUndefined(data.access_keys[0].access_key) && _.isUndefined(data.name)) {
             throw_cli_error(ManageCLIError.MissingIdentifier);
+            return;
         }
     } else {
-        if ((action !== ACTIONS.UPDATE && data.new_name)) throw_cli_error(ManageCLIError.InvalidNewNameAccountIdentifier);
-        if ((action !== ACTIONS.UPDATE && data.new_access_key)) throw_cli_error(ManageCLIError.InvalidNewAccessKeyIdentifier);
-        if (_.isUndefined(data.name)) throw_cli_error(ManageCLIError.MissingAccountNameFlag);
-
-        if (_.isUndefined(data.access_keys[0].secret_key)) throw_cli_error(ManageCLIError.MissingAccountSecretKeyFlag);
-        if (_.isUndefined(data.access_keys[0].access_key)) throw_cli_error(ManageCLIError.MissingAccountAccessKeyFlag);
+        if ((action !== ACTIONS.UPDATE && data.new_name)) {
+            throw_cli_error(ManageCLIError.InvalidNewNameAccountIdentifier);
+            return;
+        }
+        if ((action !== ACTIONS.UPDATE && data.new_access_key)) {
+            throw_cli_error(ManageCLIError.InvalidNewAccessKeyIdentifier);
+            return;
+        }
+        if (_.isUndefined(data.name)) {
+            throw_cli_error(ManageCLIError.MissingAccountNameFlag);
+            return;
+        }
+        if (_.isUndefined(data.access_keys[0].secret_key)) {
+            throw_cli_error(ManageCLIError.MissingAccountSecretKeyFlag);
+            return;
+        }
+        if (_.isUndefined(data.access_keys[0].access_key)) {
+            throw_cli_error(ManageCLIError.MissingAccountAccessKeyFlag);
+            return;
+        }
         if (data.nsfs_account_config.gid && data.nsfs_account_config.uid === undefined) {
             throw_cli_error(ManageCLIError.MissingAccountNSFSConfigUID, data.nsfs_account_config);
+            return;
         }
         if (data.nsfs_account_config.uid && data.nsfs_account_config.gid === undefined) {
             throw_cli_error(ManageCLIError.MissingAccountNSFSConfigGID, data.nsfs_account_config);
+            return;
         }
         if ((_.isUndefined(data.nsfs_account_config.distinguished_name) &&
                 (data.nsfs_account_config.uid === undefined || data.nsfs_account_config.gid === undefined))) {
             throw_cli_error(ManageCLIError.InvalidAccountNSFSConfig, data.nsfs_account_config);
+            return;
         }
         if (!_.isUndefined(data.nsfs_account_config.fs_backend) && !['GPFS', 'CEPH_FS', 'NFSv4'].includes(data.nsfs_account_config.fs_backend)) {
             throw_cli_error(ManageCLIError.InvalidFSBackend);
+            return;
         }
 
         if (_.isUndefined(data.nsfs_account_config.new_buckets_path)) {
@@ -818,11 +863,13 @@ async function validate_account_args(data, action) {
         const exists = await native_fs_utils.is_path_exists(fs_context_fs_backend, data.nsfs_account_config.new_buckets_path);
         if (!exists) {
             throw_cli_error(ManageCLIError.InvalidAccountNewBucketsPath, data.nsfs_account_config.new_buckets_path);
+            return;
         }
         const account_fs_context = await native_fs_utils.get_fs_context(data.nsfs_account_config, data.fs_backend);
         const accessible = await native_fs_utils.is_dir_rw_accessible(account_fs_context, data.nsfs_account_config.new_buckets_path);
         if (!accessible) {
             throw_cli_error(ManageCLIError.InaccessibleAccountNewBucketsPath, data.nsfs_account_config.new_buckets_path);
+            return;
         }
     }
 }
@@ -842,9 +889,12 @@ async function validate_input_types(type, action, argv) {
     // the first element is _ with the type and action, so we remove it
     input_options.shift();
     delete input_options_with_data._;
-    validate_no_extra_options(type, action, input_options, false);
-    validate_options_type_by_value(input_options_with_data);
-
+    if(!validate_no_extra_options(type, action, input_options, false)){
+        return;
+    }
+    if(!validate_options_type_by_value(input_options_with_data)){
+        return;
+    }
     // currently we use from_file only in add action
     const path_to_json_options = argv.from_file ? String(argv.from_file) : '';
     if ((type === TYPES.ACCOUNT || type === TYPES.BUCKET) && action === ACTIONS.ADD && path_to_json_options) {
@@ -853,9 +903,14 @@ async function validate_input_types(type, action, argv) {
         if (input_options_from_file.includes(FROM_FILE)) {
             const details = `${FROM_FILE} should not be passed inside json options`;
             throw_cli_error(ManageCLIError.InvalidArgument, details);
+            return;
         }
-        validate_no_extra_options(type, action, input_options_from_file, true);
-        validate_options_type_by_value(input_options_with_data_from_file);
+        if(!validate_no_extra_options(type, action, input_options_from_file, true)){
+            return;
+        }
+        if(!validate_options_type_by_value(input_options_with_data_from_file)){
+            return;
+        }
         return input_options_with_data_from_file;
     }
 }
@@ -899,7 +954,6 @@ function validate_no_extra_options(type, action, input_options, is_options_from_
     } else {
         valid_options = VALID_OPTIONS.whitelist_options;
     }
-
     if (is_options_from_file) {
         valid_options.delete('from_file');
         valid_options.delete('config_root');
@@ -916,7 +970,9 @@ function validate_no_extra_options(type, action, input_options, is_options_from_
         let details = `${invalid_option_msg} for ${type_and_action}. ${supported_option_msg}`;
         if (from_file_condition) details += ` (when using ${FROM_FILE} flag only partial list of flags are supported)`;
         throw_cli_error(ManageCLIError.InvalidArgument, details);
+        return false;
     }
+    return true;
 }
 /**
  * validate_options_type_by_value check the type of the value that match what we expect.
@@ -941,8 +997,10 @@ function validate_options_type_by_value(input_options_with_data) {
             }
             const details = `type of flag ${option} should be ${type_of_option}`;
             throw_cli_error(ManageCLIError.InvalidArgumentType, details);
+            return false;
         }
     }
+    return true;
 }
 
 /**
@@ -1001,6 +1059,7 @@ function verify_whitelist_ips(ips_to_validate) {
         if (net.isIP(ip_to_validate) === 0) {
             const detail_msg = `IP address list has an invalid IP address ${ip_to_validate}`;
             throw_cli_error(ManageCLIError.InvalidWhiteListIPFormat, detail_msg);
+            return;
         }
     }
 }
@@ -1009,9 +1068,11 @@ function _validate_access_keys(access_key, secret_key) {
     // using the access_key flag requires also using the secret_key flag
     if (!_.isUndefined(access_key) && _.isUndefined(secret_key)) {
         throw_cli_error(ManageCLIError.MissingAccountSecretKeyFlag);
+        return; 
     }
     if (!_.isUndefined(secret_key) && _.isUndefined(access_key)) {
         throw_cli_error(ManageCLIError.MissingAccountAccessKeyFlag);
+        return;
     }
     // checking the complexity of access_key
     if (!_.isUndefined(access_key) && !string_utils.validate_complexity(access_key, {
@@ -1020,7 +1081,10 @@ function _validate_access_keys(access_key, secret_key) {
             check_lowercase: false,
             check_numbers: true,
             check_symbols: false,
-        })) throw_cli_error(ManageCLIError.AccountAccessKeyFlagComplexity);
+        })) {
+            throw_cli_error(ManageCLIError.AccountAccessKeyFlagComplexity);
+            return;
+        }
     // checking the complexity of secret_key
     if (!_.isUndefined(secret_key) && !string_utils.validate_complexity(secret_key, {
             require_length: 40,
