@@ -281,6 +281,17 @@ async function validate_s3_policy(policy, bucket_name, get_account_handler) {
     }
 }
 
+/*
+    CRUD action on bucket policy only allow to bucket owner 
+*/
+async function validate_s3_policy_owner(bucket_owner_id, account) {
+    if (bucket_owner_id !== account._id) {
+        const err_msg = 'The specified method is not allowed against this resource.';
+        throw new RpcError('METHOD_NOT_ALLOWED', err_msg);
+    }
+}
+
 exports.OP_NAME_TO_ACTION = OP_NAME_TO_ACTION;
 exports.has_bucket_policy_permission = has_bucket_policy_permission;
 exports.validate_s3_policy = validate_s3_policy;
+exports.validate_s3_policy_owner = validate_s3_policy_owner;
