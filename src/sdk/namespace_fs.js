@@ -145,6 +145,7 @@ function _get_filename(file_name) {
     }
     return file_name;
 }
+
 /**
  * @param {fs.Dirent} first_entry
  * @param {fs.Dirent} second_entry
@@ -877,13 +878,7 @@ class NamespaceFS {
 
             const prefix_dir_key = prefix.slice(0, prefix.lastIndexOf('/') + 1);
             await process_dir(prefix_dir_key);
-            await Promise.all(results.map(async r => {
-                if (r.common_prefix) return;
-                const entry_path = path.join(this.bucket_path, r.key);
-                //If entry is outside of bucket, returns stat of symbolic link
-                const use_lstat = !(await this._is_path_in_bucket_boundaries(fs_context, entry_path));
-                r.stat = await nb_native().fs.stat(fs_context, entry_path, { use_lstat });
-            }));
+            await this.validate_results(results, fs_context);
             const res = {
                 objects: [],
                 common_prefixes: [],
@@ -922,6 +917,24 @@ class NamespaceFS {
         } catch (err) {
             throw native_fs_utils.translate_error_codes(err, native_fs_utils.entity_enum.OBJECT);
         }
+    }
+
+    async validate_results(results, fs_context) {
+        await Promise.all(results.map(async r => {
+            if (r.common_prefix) return;
+            const entry_path = path.join(this.bucket_path, r.key);
+            //If entry is outside of bucket, returns stat of symbolic link
+            const use_lstat = !(await this._is_path_in_bucket_boundaries(fs_context, entry_path));
+            try {
+                r.stat = await nb_native().fs.stat(fs_context, entry_path, { use_lstat });
+            } catch (err) {
+                dbg.warn('NamespaceFS: validate_results : couldnt access file entry_path', entry_path, ", skipping...");
+                const index = results.indexOf(r);
+                if (index > -1) {
+                    results.splice(index, 1);
+                }
+            }
+        }));
     }
 
     /////////////////
