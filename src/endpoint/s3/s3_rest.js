@@ -249,6 +249,7 @@ async function authorize_request_policy(req) {
     }
 
     const account = req.object_sdk.requesting_account;
+    //console.log("ACCOUNT ====>>>>", account.name.unwrap())
     const account_identifier_name = req.object_sdk.nsfs_config_root ? account.name.unwrap() : account.email.unwrap();
     const account_identifier_id = req.object_sdk.nsfs_config_root ? account._id : undefined;
 

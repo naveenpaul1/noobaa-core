@@ -43,6 +43,9 @@ const { PersistentLogger } = require('../util/persistent_logger');
 const { get_notification_logger } = require('../util/notifications_util');
 const ldap_client = require('../util/ldap_client');
 const { is_nc_environment } = require('../nc/nc_utils');
+const BucketSpaceNB = require('../sdk/bucketspace_nb');
+const AccountSDK = require('../sdk/account_sdk');
+const AccountSpaceNB = require('../sdk/accountspace_nb');
 const NoobaaEvent = require('../manage_nsfs/manage_nsfs_events_utils').NoobaaEvent;
 const cluster = /** @type {import('node:cluster').Cluster} */ (
     /** @type {unknown} */
@@ -66,6 +69,29 @@ const new_umask = process.env.NOOBAA_ENDPOINT_UMASK || 0o000;
 const old_umask = process.umask(new_umask);
 let fork_count;
 dbg.log0('endpoint: replacing old umask: ', old_umask.toString(8), 'with new umask: ', new_umask.toString(8));
+
+
+// NsfsAccountSDK was based on NsfsObjectSDK
+// simple flow was not implemented
+class NBAccountSDK extends AccountSDK {
+     /**
+     * @param {{
+     *      rpc_client: nb.APIClient;
+     *      internal_rpc_client: nb.APIClient;
+     * }} args
+     */
+    constructor({rpc_client, internal_rpc_client}) {
+        const bucketspace = new BucketSpaceNB({ rpc_client, internal_rpc_client });
+        const accountspace = new AccountSpaceNB({ rpc_client, internal_rpc_client });
+
+        super({
+            rpc_client: rpc_client,
+            internal_rpc_client: internal_rpc_client,
+            bucketspace: bucketspace,
+            accountspace: accountspace,
+        });
+    }
+}
 
 /**
  * @typedef {import('http').IncomingMessage & {
@@ -277,7 +303,6 @@ async function main(options = {}) {
 async function start_endpoint_server_and_cert(server_type, init_request_sdk, options = {}) {
     const { http_port, https_port, nsfs_config_root } = options;
     const endpoint_request_handler = create_endpoint_handler(server_type, init_request_sdk, options);
-
     if (server_type === SERVICES_TYPES_ENUM.S3) {
         if (nsfs_config_root && !config.ALLOW_HTTP) {
             dbg.warn('HTTP is not allowed for NC NSFS.');
@@ -431,9 +456,15 @@ function create_init_request_sdk(rpc, internal_rpc_client, object_io) {
             object_io,
             stats: endpoint_stats_collector.instance(),
         });
+        req.account_sdk = new NBAccountSDK({
+            rpc_client,
+            internal_rpc_client,
+            //stats: endpoint_stats_collector.instance(),
+        });
     };
     return init_request_sdk;
 }
+
 
 function get_rpc_router(env) {
     const hostname = 'localhost';

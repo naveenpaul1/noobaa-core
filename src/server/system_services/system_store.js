@@ -11,6 +11,7 @@ const cluster_schema = require('./schemas/cluster_schema');
 const namespace_resource_schema = require('./schemas/namespace_resource_schema');
 const role_schema = require('./schemas/role_schema');
 const account_schema = require('./schemas/account_schema');
+const iam_policy_schema = require('./schemas/iam_policy_schema');
 const bucket_schema = require('./schemas/bucket_schema');
 const tiering_policy_schema = require('./schemas/tiering_policy_schema');
 const tier_schema = require('./schemas/tier_schema');
@@ -90,6 +91,14 @@ const COLLECTIONS = [{
     mem_indexes: [{
         name: 'accounts_by_email',
         key: 'email'
+    }],
+    db_indexes: account_indexes,
+}, {
+    name: 'iam_policies',
+    schema: iam_policy_schema,
+    mem_indexes: [{
+        name: 'iam_policy_by_name',
+        key: 'name'
     }],
     db_indexes: account_indexes,
 }, {

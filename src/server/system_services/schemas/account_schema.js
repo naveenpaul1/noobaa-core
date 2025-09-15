@@ -27,6 +27,15 @@ module.exports = {
         has_login: { type: 'boolean' },
         password: { wrapper: SensitiveString }, // bcrypted password - DEPRECATED
         next_password_change: { date: true }, // DEPRECATED
+        owner: { type: 'string' },
+        is_iam: { type: 'boolean' },
+        iam_arn: { type: 'string' },
+        iam_policies: {
+            type: 'array',
+            items: {
+                objectid: true // iam policy ids
+            },
+        },
 
         // default policy for new buckets
         default_resource: { objectid: true },
