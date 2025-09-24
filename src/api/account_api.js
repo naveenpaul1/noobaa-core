@@ -658,6 +658,12 @@ module.exports = {
                 default_resource: {
                     type: 'string',
                 },
+                iam_policies: {
+                    type: 'array',
+                    items: {
+                        $ref: 'common_api#/definitions/bucket_policy',
+                    }
+                },
                 bucket_claim_owner: {
                     $ref: 'common_api#/definitions/bucket_name',
                 },

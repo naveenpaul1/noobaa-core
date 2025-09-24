@@ -27,7 +27,11 @@ module.exports = {
         has_login: { type: 'boolean' },
         password: { wrapper: SensitiveString }, // bcrypted password - DEPRECATED
         next_password_change: { date: true }, // DEPRECATED
+        // TODO: Check NSFS behaviour for account and iam user
         owner: { type: 'string' },
+        tagging: {
+            $ref: 'common_api#/definitions/tagging',
+        },
         is_iam: { type: 'boolean' },
         iam_arn: { type: 'string' },
         iam_policies: {

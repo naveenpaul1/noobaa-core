@@ -145,6 +145,12 @@ class AccountSDK {
         const accountspace = this._get_accountspace();
         return accountspace.list_access_keys(params, this);
     }
+
+    async put_user_policy(params) {
+        const accountspace = this._get_accountspace();
+        return accountspace.put_user_policy(params, this);
+    }
+
 }
 
 // EXPORTS

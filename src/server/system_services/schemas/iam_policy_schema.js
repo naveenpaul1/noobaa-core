@@ -8,19 +8,19 @@ module.exports = {
     required: [
         '_id',
         'name',
-        'type',
-        's3_policy'
+        'policy_type',
+        'iam_policy'
     ],
     properties: {
         // identity
         _id: { objectid: true },
         deleted: { date: true },
         name: {type: 'string'},
-        type: {
+        policy_type: {
             type: 'string',
             enum: ['INLINE', 'MANAGED']
         },
-        s3_policy: {
+        iam_policy: {
             $ref: 'common_api#/definitions/bucket_policy',
         },
     }

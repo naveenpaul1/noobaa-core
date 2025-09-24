@@ -238,6 +238,14 @@ async function authorize_request_policy(req) {
         public_access_block,
     } = await req.object_sdk.read_bucket_sdk_policy_info(req.params.bucket);
 
+    const account = req.object_sdk.requesting_account;
+    //console.log(" ##### ACCOUNT POLICIES====>>>>", account.name.unwrap(), account.iam_policies)
+    //console.log(" BUCKET POLICY ====>>>", s3_policy)
+    if (s3_policy && account.iam_policies.length > 0) {
+        s3_policy.Statement.push(account.iam_policies[0].Statement[0]);
+        //console.log("\n \n APPENDED POLICIES ======>>", s3_policy)
+    }
+
     const auth_token = req.object_sdk.get_auth_token();
     const arn_path = _get_arn_from_req_path(req);
     const method = _get_method_from_req(req);
@@ -248,8 +256,6 @@ async function authorize_request_policy(req) {
         return;
     }
 
-    const account = req.object_sdk.requesting_account;
-    //console.log("ACCOUNT ====>>>>", account.name.unwrap())
     const account_identifier_name = req.object_sdk.nsfs_config_root ? account.name.unwrap() : account.email.unwrap();
     const account_identifier_id = req.object_sdk.nsfs_config_root ? account._id : undefined;
 

@@ -996,6 +996,10 @@ class AccountSpaceFS {
         }
         _clean_account_id_cache(requested_account);
     }
+
+    async put_user_policy() {
+        throw new Error('put_user_policy is not implemented for NC NSFS');
+    }
 }
 
 // EXPORTS

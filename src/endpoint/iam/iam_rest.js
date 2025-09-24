@@ -63,6 +63,7 @@ const ACTIONS = Object.freeze({
     'ListUserPolicies': 'list_user_policies',
     'ListUserTags': 'list_user_tags',
     'ListVirtualMFADevices': 'list_virtual_mfa_devices',
+    'PutUserPolicy': 'put_user_policy'
 });
 
 // notice: shows all methods as method post
@@ -109,6 +110,7 @@ const IAM_OPS = js_utils.deep_freeze({
     post_list_user_policies: require('./ops/iam_list_user_policies.js'),
     post_list_user_tags: require('./ops/iam_list_user_tags.js'),
     post_list_virtual_mfa_devices: require('./ops/iam_list_virtual_mfa_devices.js'),
+    post_put_user_policy: require('./ops/iam_put_user_policy.js'),
 });
 
 async function iam_rest(req, res) {
