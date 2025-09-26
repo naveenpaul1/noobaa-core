@@ -61,6 +61,7 @@ class BlockStoreS3 extends BlockStoreBase {
             this.s3cloud = new S3({
                 endpoint: endpoint,
                 forcePathStyle: true,
+                region: DEFAULT_REGION,
                 credentials: {
                     accessKeyId: this.cloud_info.access_keys.access_key.unwrap(),
                     secretAccessKey: this.cloud_info.access_keys.secret_key.unwrap(),

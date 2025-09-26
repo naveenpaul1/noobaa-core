@@ -301,6 +301,8 @@ async function authorize_request_policy(req) {
     // 1. account name (for backwards compatibility)
     // 2. account id
     // we start the permission check on account identifier intentionally
+
+    // TODO: USE ARN in principle section
     if (account_identifier_id) {
         permission_by_id = await s3_bucket_policy_utils.has_bucket_policy_permission(
             s3_policy, account_identifier_id, method, arn_path, req, public_access_block?.restrict_public_buckets);

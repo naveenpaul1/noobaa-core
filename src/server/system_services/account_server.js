@@ -22,7 +22,7 @@ const { OP_NAME_TO_ACTION } = require('../../endpoint/sts/sts_rest');
 const { Durations, LogsQueryClient } = require('@azure/monitor-query');
 const { ClientSecretCredential } = require("@azure/identity");
 const noobaa_s3_client = require('../../sdk/noobaa_s3_client/noobaa_s3_client');
-const account_utils = require('../../util/account_util');
+const account_util = require('../../util/account_util');
 
 
 const check_connection_timeout = 15 * 1000;
@@ -35,9 +35,9 @@ const check_new_azure_connection_timeout = 20 * 1000;
  */
 async function create_account(req) {
 
-    account_utils.validate_create_account_permissions(req);
-    account_utils.validate_create_account_params(req);
-    const {token, access_keys} = await account_utils.create_account(req);
+    account_util.validate_create_account_permissions(req);
+    account_util.validate_create_account_params(req);
+    const {token, access_keys} = await account_util.create_account(req);
 
     return {
         token,
@@ -132,7 +132,7 @@ function read_account_by_access_key(req) {
  *
  */
 async function generate_account_keys(req) {
-    return await account_utils.generate_account_keys(req);
+    return await account_util.generate_account_keys(req);
 }
 
 /**
@@ -401,45 +401,7 @@ async function get_account_usage(req) {
 function delete_account(req) {
     const account_to_delete = system_store.get_account_by_email(req.rpc_params.email);
     _verify_can_delete_account(req, account_to_delete);
-
-    const roles_to_delete = system_store.data.roles
-        .filter(
-            role => String(role.account._id) === String(account_to_delete._id)
-        )
-        .map(
-            role => role._id
-        );
-
-    return system_store.make_changes({
-            remove: {
-                accounts: [account_to_delete._id],
-                roles: roles_to_delete
-            }
-        })
-        .then(
-            val => {
-                Dispatcher.instance().activity({
-                    event: 'account.delete',
-                    level: 'info',
-                    system: req.system && req.system._id,
-                    actor: req.account && req.account._id,
-                    account: account_to_delete._id,
-                    desc: `${account_to_delete.email.unwrap()} was deleted by ${req.account && req.account.email.unwrap()}`,
-                });
-                return val;
-            },
-            err => {
-                Dispatcher.instance().activity({
-                    event: 'account.delete',
-                    level: 'alert',
-                    system: req.system && req.system._id,
-                    actor: req.account && req.account._id,
-                    account: account_to_delete._id,
-                    desc: `Error: ${account_to_delete.email.unwrap()} failed to delete by ${req.account && req.account.email.unwrap()}`,
-                });
-                throw err;
-            }
-        );
+    return account_util.delete_user(req, account_to_delete);
 }
 
 

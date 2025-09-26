@@ -148,6 +148,47 @@ async function create_account(req) {
     };
 }
 
+function delete_user(req, account_to_delete) {
+    const roles_to_delete = system_store.data.roles
+    .filter(
+        role => String(role.account._id) === String(account_to_delete._id)
+    )
+    .map(
+        role => role._id
+    );
+
+    return system_store.make_changes({
+        remove: {
+            accounts: [account_to_delete._id],
+            roles: roles_to_delete
+        }
+    })
+    .then(
+        val => {
+            Dispatcher.instance().activity({
+                event: 'account.delete',
+                level: 'info',
+                system: req.system && req.system._id,
+                actor: req.account && req.account._id,
+                account: account_to_delete._id,
+                desc: `${account_to_delete.email.unwrap()} was deleted by ${req.account && req.account.email.unwrap()}`,
+            });
+            return val;
+        },
+        err => {
+            Dispatcher.instance().activity({
+                event: 'account.delete',
+                level: 'alert',
+                system: req.system && req.system._id,
+                actor: req.account && req.account._id,
+                account: account_to_delete._id,
+                desc: `Error: ${account_to_delete.email.unwrap()} failed to delete by ${req.account && req.account.email.unwrap()}`,
+            });
+            throw err;
+        }
+    );
+}
+
 /**
  *
  * GENERATE_ACCOUNT_KEYS
@@ -289,7 +330,22 @@ async function put_user_policy(req) {
             accounts: updates
         }
     });
+}
 
+async function _check_if_user_does_not_have_inline_policy_before_deletion(action, account_to_delete) {
+    const resource_name = 'policies';
+        const is_policies_removed = account_to_delete.iam_policies.length === 0;
+        if (!is_policies_removed) {
+            _throw_error_delete_conflict(action, account_to_delete, resource_name);
+        }
+}
+
+async function _check_if_user_does_not_have_access_keys_before_deletion(action, account_to_delete) {
+    const resource_name = 'access keys';
+        const is_access_keys_removed = account_to_delete.access_keys.length === 0;
+        if (!is_access_keys_removed) {
+            _throw_error_delete_conflict(action, account_to_delete, resource_name);
+        }
 }
 
 async function _check_if_account_exists(action, username, params, requesting_account) {
@@ -362,6 +418,17 @@ function _check_if_requested_is_owned_by_root_account(action, requesting_account
         const { code, http_code, type } = IamError.NoSuchEntity;
         throw new IamError({ code, message: message_with_details, http_code, type });
     }
+}
+
+
+
+    // TODO: move to IamError class with a template
+function _throw_error_delete_conflict(action, account_to_delete, resource_name) {
+    dbg.error(`AccountSpaceFS.${action} requested account ` +
+        `${account_to_delete.name} ${account_to_delete._id} has ${resource_name}`);
+    const message_with_details = `Cannot delete entity, must delete ${resource_name} first.`;
+    const { code, http_code, type } = IamError.DeleteConflict;
+    throw new IamError({ code, message: message_with_details, http_code, type });
 }
 
 function _throw_error_perform_action_from_root_accounts_manager_on_iam_user(action, requesting_account, requested_account) {
@@ -509,7 +576,7 @@ function validate_create_account_params(req) {
 }
 
 
-
+exports.delete_user = delete_user;
 exports.create_account = create_account;
 exports.generate_account_keys = generate_account_keys;
 exports.put_user_policy = put_user_policy;
@@ -520,3 +587,5 @@ exports.validate_create_account_params = validate_create_account_params;
 exports._check_if_account_exists = _check_if_account_exists;
 exports._check_if_requested_is_owned_by_root_account = _check_if_requested_is_owned_by_root_account;
 exports._check_if_requested_account_is_root_account_or_IAM_user = _check_if_requested_account_is_root_account_or_IAM_user;
+exports._check_if_user_does_not_have_access_keys_before_deletion = _check_if_user_does_not_have_access_keys_before_deletion;
+exports._check_if_user_does_not_have_inline_policy_before_deletion = _check_if_user_does_not_have_inline_policy_before_deletion;
