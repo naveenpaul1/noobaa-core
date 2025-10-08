@@ -14,9 +14,7 @@ const pool_server = require('../server/system_services/pool_server');
 const { OP_NAME_TO_ACTION } = require('../endpoint/sts/sts_rest');
 const IamError = require('../endpoint/iam/iam_errors').IamError;
 const { create_arn_for_user, get_action_message_title } = require('../endpoint/iam/iam_utils');
-
-
-const { IAM_ACTIONS } = require('../endpoint/iam/iam_constants');
+const { IAM_ACTIONS, MAX_NUMBER_OF_ACCESS_KEYS, ACCESS_KEY_STATUS_ENUM, IAM_SPLIT_CHARACTERS } = require('../endpoint/iam/iam_constants');
 
 const demo_access_keys = Object.freeze({
     access_key: new SensitiveString('123'),
@@ -216,6 +214,7 @@ async function generate_account_keys(req) {
     const decrypted_access_keys = _.cloneDeep(access_keys);
     access_keys.secret_key = system_store.master_key_manager.encrypt_sensitive_string_with_master_key_id(
         access_keys.secret_key, account.master_key_id._id);
+    access_keys.deactivated = false;
 
     await system_store.make_changes({
         update: {
@@ -332,24 +331,24 @@ async function put_user_policy(req) {
     });
 }
 
-async function _check_if_user_does_not_have_inline_policy_before_deletion(action, account_to_delete) {
+function _check_if_user_does_not_have_inline_policy_before_deletion(action, account_to_delete) {
     const resource_name = 'policies';
-        const is_policies_removed = account_to_delete.iam_policies.length === 0;
-        if (!is_policies_removed) {
+        const is_policies_exists = account_to_delete.iam_policies && account_to_delete.iam_policies.length > 0;
+        if (is_policies_exists) {
             _throw_error_delete_conflict(action, account_to_delete, resource_name);
         }
 }
 
-async function _check_if_user_does_not_have_access_keys_before_deletion(action, account_to_delete) {
+function _check_if_user_does_not_have_access_keys_before_deletion(action, account_to_delete) {
     const resource_name = 'access keys';
-        const is_access_keys_removed = account_to_delete.access_keys.length === 0;
-        if (!is_access_keys_removed) {
+        const is_access_keys_exists = account_to_delete.access_keys && account_to_delete.access_keys.length > 0;
+        if (is_access_keys_exists) {
             _throw_error_delete_conflict(action, account_to_delete, resource_name);
         }
 }
 
-async function _check_if_account_exists(action, username, params, requesting_account) {
-    const email = new SensitiveString(`${params.username}:${requesting_account.name.unwrap()}`);
+function _check_if_account_exists(action, username, requesting_account) {
+    const email = new SensitiveString(`${username}:${requesting_account.name.unwrap()}`);
     const account = system_store.get_account_by_email(email);
     if (!account) {
         dbg.error(`AccountSpaceNB.${action} username does not exist`, username);
@@ -381,7 +380,7 @@ function _check_if_requesting_account_is_root_account(action, requesting_account
     }
 }
 
-async function _check_username_already_exists(action, params, requesting_account) {
+function _check_username_already_exists(action, params, requesting_account) {
     const email = new SensitiveString(`${params.username}:${requesting_account.name.unwrap()}`);
     const account = system_store.get_account_by_email(email);
     if (account) {
@@ -420,7 +419,15 @@ function _check_if_requested_is_owned_by_root_account(action, requesting_account
     }
 }
 
-
+function _check_number_of_access_key_array(action, requested_account) {
+    if (requested_account.access_keys && requested_account.access_keys.length >= MAX_NUMBER_OF_ACCESS_KEYS) {
+        dbg.error(`AccountSpaceFS.${action} requested account is not owned by root account `,
+        requested_account);
+        const message_with_details = `Cannot exceed quota for AccessKeysPerUser: ${MAX_NUMBER_OF_ACCESS_KEYS}.`;
+        const { code, http_code, type } = IamError.LimitExceeded;
+        throw new IamError({ code, message: message_with_details, http_code, type });
+    }
+}
 
     // TODO: move to IamError class with a template
 function _throw_error_delete_conflict(action, account_to_delete, resource_name) {
@@ -429,6 +436,40 @@ function _throw_error_delete_conflict(action, account_to_delete, resource_name) 
     const message_with_details = `Cannot delete entity, must delete ${resource_name} first.`;
     const { code, http_code, type } = IamError.DeleteConflict;
     throw new IamError({ code, message: message_with_details, http_code, type });
+}
+
+function _list_access_keys_from_account(requesting_account, account, on_itself) {
+    const members = [];
+    if (!account.access_keys || account.access_keys.length === 0) {
+        return members;
+    }
+    for (const access_key of account.access_keys) {
+        const member = {
+            username: _returned_username(requesting_account, account.name, on_itself).split(IAM_SPLIT_CHARACTERS)[0],
+            access_key: access_key.access_key instanceof SensitiveString ? access_key.access_key.unwrap() : access_key.access_key,
+            status: _get_access_key_status(access_key.deactivated),
+            create_date: access_key.creation_date ?? account.creation_date,
+        };
+        members.push(member);
+    }
+    return members;
+}
+
+/**
+* _returned_username would return the username of IAM Access key API:
+    * 1. undefined - for root accounts manager on root account (no username, only account name)
+    *                for root account on itself 
+    * 2. username - for IAM user
+    * @param {object} requesting_account
+    * @param {Object} username
+    * @param {boolean} on_itself
+    */
+function _returned_username(requesting_account, username, on_itself) {
+    if ((requesting_account.iam_operate_on_root_account) ||
+        (_check_root_account(requesting_account) && on_itself)) {
+            return undefined;
+    }
+    return username instanceof SensitiveString ? username.unwrap() : username;
 }
 
 function _throw_error_perform_action_from_root_accounts_manager_on_iam_user(action, requesting_account, requested_account) {
@@ -446,6 +487,33 @@ function _throw_error_perform_action_on_another_root_account(action, requesting_
     dbg.error(`AccountSpaceNB.${action} root account of requested account is different than requesting root account`,
         requesting_account, requested_account);
     const message_with_details = `The user with name ${username} cannot be found.`;
+    const { code, http_code, type } = IamError.NoSuchEntity;
+    throw new IamError({ code, message: message_with_details, http_code, type });
+}
+
+function _check_access_key_belongs_to_account(action, requested_account, access_key_id) {
+    console.log("_check_access_key_belongs_to_account. ====>>", requested_account.access_keys, access_key_id);
+    const is_access_key_belongs_to_account = _check_specific_access_key_exists(requested_account.access_keys, access_key_id);
+    if (!is_access_key_belongs_to_account) {
+        _throw_error_no_such_entity_access_key(action, access_key_id);
+    }
+}
+
+function _check_specific_access_key_exists(access_keys, access_key_to_find) {
+    for (const access_key_obj of access_keys) {
+        const access_key = access_key_obj.access_key instanceof SensitiveString ?
+                                access_key_obj.access_key.unwrap() : access_key_obj.access_key;
+        if (access_key_to_find === access_key) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// TODO: move to IamError class with a template
+function _throw_error_no_such_entity_access_key(action, access_key_id) {
+    dbg.error(`AccountSpaceFS.${action} access key does not exist`, access_key_id);
+    const message_with_details = `The Access Key with id ${access_key_id} cannot be found`;
     const { code, http_code, type } = IamError.NoSuchEntity;
     throw new IamError({ code, message: message_with_details, http_code, type });
 }
@@ -496,6 +564,16 @@ function _get_account_owner_id_for_arn(requesting_account, requested_account) {
 
 function _check_root_account(account) {
     return account.owner === undefined;
+}
+
+function _check_access_key_is_deactivated(status) {
+    return status === ACCESS_KEY_STATUS_ENUM.INACTIVE;
+}
+
+ function _get_access_key_status(deactivated) {
+    // we would like the default to be Active (so when it is undefined it would be Active)
+    const status = deactivated ? ACCESS_KEY_STATUS_ENUM.INACTIVE : ACCESS_KEY_STATUS_ENUM.ACTIVE;
+    return status;
 }
 
 
@@ -585,6 +663,12 @@ exports._check_username_already_exists = _check_username_already_exists;
 exports.validate_create_account_permissions = validate_create_account_permissions;
 exports.validate_create_account_params = validate_create_account_params;
 exports._check_if_account_exists = _check_if_account_exists;
+exports._get_access_key_status = _get_access_key_status;
+exports._returned_username = _returned_username;
+exports._list_access_keys_from_account = _list_access_keys_from_account;
+exports._check_access_key_is_deactivated = _check_access_key_is_deactivated;
+exports._check_number_of_access_key_array = _check_number_of_access_key_array;
+exports._check_access_key_belongs_to_account = _check_access_key_belongs_to_account;
 exports._check_if_requested_is_owned_by_root_account = _check_if_requested_is_owned_by_root_account;
 exports._check_if_requested_account_is_root_account_or_IAM_user = _check_if_requested_account_is_root_account_or_IAM_user;
 exports._check_if_user_does_not_have_access_keys_before_deletion = _check_if_user_does_not_have_access_keys_before_deletion;

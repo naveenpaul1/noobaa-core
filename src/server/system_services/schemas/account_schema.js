@@ -55,6 +55,7 @@ module.exports = {
                 properties: {
                     access_key: { $ref: 'common_api#/definitions/access_key' },
                     secret_key: { $ref: 'common_api#/definitions/secret_key' },
+                    deactivated: { type: 'boolean' },
                 }
             }
         },
