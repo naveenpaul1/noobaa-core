@@ -13,6 +13,7 @@ const system_store = require('..//server/system_services/system_store').get_inst
 const pool_server = require('../server/system_services/pool_server');
 const { OP_NAME_TO_ACTION } = require('../endpoint/sts/sts_rest');
 const IamError = require('../endpoint/iam/iam_errors').IamError;
+//const { account_cache } = require('./../sdk/object_sdk');
 const { create_arn_for_user, get_action_message_title } = require('../endpoint/iam/iam_utils');
 const { IAM_ACTIONS, MAX_NUMBER_OF_ACCESS_KEYS, ACCESS_KEY_STATUS_ENUM, IAM_SPLIT_CHARACTERS } = require('../endpoint/iam/iam_constants');
 
@@ -510,6 +511,19 @@ function _check_specific_access_key_exists(access_keys, access_key_to_find) {
     return false;
 }
 
+function _check_specific_access_key_inactive(action, access_key_to_find, requested_account) {
+    const resource_name = 'access keys';
+    for (const access_key_obj of requested_account.access_keys) {
+        const access_key = access_key_obj.access_key instanceof SensitiveString ?
+                                access_key_obj.access_key.unwrap() : access_key_obj.access_key;
+        if (access_key_to_find === access_key) {
+            if (!_check_access_key_is_deactivated(access_key_obj.deactivated)) {
+                _throw_error_delete_conflict(action, requested_account, resource_name);
+            }
+        }
+    }
+}
+
 // TODO: move to IamError class with a template
 function _throw_error_no_such_entity_access_key(action, access_key_id) {
     dbg.error(`AccountSpaceFS.${action} access key does not exist`, access_key_id);
@@ -665,6 +679,7 @@ exports.validate_create_account_params = validate_create_account_params;
 exports._check_if_account_exists = _check_if_account_exists;
 exports._get_access_key_status = _get_access_key_status;
 exports._returned_username = _returned_username;
+exports._check_specific_access_key_inactive = _check_specific_access_key_inactive;
 exports._list_access_keys_from_account = _list_access_keys_from_account;
 exports._check_access_key_is_deactivated = _check_access_key_is_deactivated;
 exports._check_number_of_access_key_array = _check_number_of_access_key_array;

@@ -47,7 +47,6 @@ class BlockStoreS3 extends BlockStoreBase {
                         secretAccessKey: this.cloud_info.access_keys.secret_key.unwrap(),
                     },
                     forcePathStyle: true,
-                    region: DEFAULT_REGION,
                     requestHandler: new NodeHttpHandler({
                         httpsAgent: http_utils.get_default_agent(endpoint)
                     }),

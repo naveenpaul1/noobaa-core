@@ -7,13 +7,19 @@ const account_util = require('./../util/account_util');
 const iam_utils = require('../endpoint/iam/iam_utils');
 const dbg = require('../util/debug_module')(__filename);
 const system_store = require('..//server/system_services/system_store').get_instance();
-const { IAM_ACTIONS, IAM_DEFAULT_PATH, ACCESS_KEY_STATUS_ENUM, IAM_SPLIT_CHARACTERS } = require('../endpoint/iam/iam_constants');
+// const { account_cache } = require('./object_sdk');
+const { IAM_ACTIONS, IAM_DEFAULT_PATH, ACCESS_KEY_STATUS_ENUM,
+    IAM_SPLIT_CHARACTERS } = require('../endpoint/iam/iam_constants');
 
+
+const dummy_region = 'us-west-2';
+const dummy_service_name = 's3';
 /* 
     TODO: DISCUSS: 
     1. IAM API only for account created using IAM API and OBC accounts not from admin, support, 
        operator and account created using noobaa.
     2. Do we need to have two access keys
+    3. get_access_key_last_used() API call could return dummy values?
 */
 
 /**
@@ -245,8 +251,23 @@ class AccountSpaceNB {
         };
     }
 
-    async get_access_key_last_used(params) {
-        console.log("Implemention pending");
+    async get_access_key_last_used(params, account_sdk) {
+        const action = IAM_ACTIONS.GET_ACCESS_KEY_LAST_USED;
+        const requesting_account = system_store.get_account_by_email(account_sdk.requesting_account.email);
+        //const access_key_id = params.access_key;
+        const account_name = new SensitiveString(`${params.username}:${requesting_account.name.unwrap()}`);
+        const requested_account = system_store.get_account_by_email(account_name);
+        account_util._check_if_requesting_account_is_root_account(action, requesting_account, { username: params.username });
+        await account_util._check_if_account_exists(action, params.username, requesting_account);
+        account_util._check_if_requested_account_is_root_account_or_IAM_user(action, requesting_account, requested_account);
+        //const root_account = system_store.get_account_by_email(requesting_account.email);
+        account_util._check_if_requested_is_owned_by_root_account(action, requesting_account, requested_account);
+        return {
+            region: dummy_region, // GAP
+            last_used_date: new Date(), // GAP
+            service_name: dummy_service_name, // GAP
+            username: account_util._returned_username(requesting_account, requested_account.name, false),
+        };
     }
 
     async update_access_key(params, account_sdk) {
@@ -260,18 +281,19 @@ class AccountSpaceNB {
         account_util._check_if_requesting_account_is_root_account(action, requesting_account, { username: params.username });
         await account_util._check_if_account_exists(action, params.username, requesting_account);
         account_util._check_if_requested_account_is_root_account_or_IAM_user(action, requesting_account, requested_account);
-        const root_account = system_store.get_account_by_email(requesting_account.email);
-        account_util._check_if_requested_is_owned_by_root_account(action, root_account, requested_account);
+        //const root_account = system_store.get_account_by_email(requesting_account.email);
+        account_util._check_if_requested_is_owned_by_root_account(action, requesting_account, requested_account);
         account_util._check_access_key_belongs_to_account(action, requested_account, access_key_id);
 
+
         const access_key_obj = _.find(requested_account.access_keys, access_key => access_key.access_key.unwrap() === access_key_id);
-        console.log("update_access_key ===>>>", access_key_obj);
         if (account_util._get_access_key_status(access_key_obj.deactivated) === params.status) {
             // note: master key might be changed and we do not update it since we do not update the config file
             // we can change this behavior - a matter of decision
             dbg.log1(`AccountSpaceNB.${action} status was not change, not updating the account config file`);
             return;
         }
+        // TODO: Secret key is getting corrupted when Activate/Deactivate
         access_key_obj.deactivated = account_util._check_access_key_is_deactivated(params.status);
         await system_store.make_changes({
             update: {
@@ -302,9 +324,9 @@ class AccountSpaceNB {
         //const root_account = system_store.get_account_by_email(requesting_account.email);
         account_util._check_if_requested_is_owned_by_root_account(action, requesting_account, requested_account);
         account_util._check_access_key_belongs_to_account(action, requested_account, access_key_id);
+        account_util._check_specific_access_key_inactive(action, access_key_id, requested_account);
 
         const access_key_obj = _.find(requested_account.access_keys, access_key => access_key.access_key.unwrap() === access_key_id);
-        console.log("delete_access_key ===>>>", access_key_obj);
         const delete_access_keys = {
             access_keys: access_key_obj
         };
@@ -347,7 +369,7 @@ class AccountSpaceNB {
         // TODO: Only S3 policy
         // AWS Access not given without policy. Disscus
         const account_name = new SensitiveString(`${params.username}:${account_sdk.requesting_account.name.unwrap()}`);
-        const account = system_store.get_account_by_email(new SensitiveString(account_name));
+        const account = system_store.get_account_by_email(account_name);
          const req = {
             rpc_params: {
                 account_id: account._id,

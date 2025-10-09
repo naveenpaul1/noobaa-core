@@ -909,6 +909,10 @@ interface AccountSpace {
     list_access_keys(params: object, account_sdk: AccountSDK): Promise<any>;
     // iam polcies
     put_user_policy(params: object, account_sdk: AccountSDK): Promise<any>;
+    delet_user_policy(params: object, account_sdk: AccountSDK): Promise<any>;
+    get_user_policy(params: object, account_sdk: AccountSDK): Promise<any>;
+    list_user_policies(params: object, account_sdk: AccountSDK): Promise<any>;
+
 }
 
 
