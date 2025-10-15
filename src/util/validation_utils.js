@@ -9,7 +9,7 @@ const iam_constants = require('../endpoint/iam/iam_constants');
 /**
  * _type_check_input checks that the input is the same as needed
  * @param {string} input_type
- * @param {string | number} input_value
+ * @param {string | number | object[]} input_value
  * @param {string} parameter_name
  */
 function _type_check_input(input_type, input_value, parameter_name) {

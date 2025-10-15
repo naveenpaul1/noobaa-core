@@ -61,6 +61,8 @@ const ACTIONS = Object.freeze({
     'ListSigningCertificates': 'list_signing_certificates',
     'ListSSHPublicKeys': 'list_ssh_public_keys',
     'ListUserPolicies': 'list_user_policies',
+    'TagUser': 'tag_user',
+    'UntagUser': 'untag_user',
     'ListUserTags': 'list_user_tags',
     'ListVirtualMFADevices': 'list_virtual_mfa_devices',
     'PutUserPolicy': 'put_user_policy'
@@ -109,6 +111,8 @@ const IAM_OPS = js_utils.deep_freeze({
     post_list_ssh_public_keys: require('./ops/iam_list_ssh_public_keys.js'),
     post_list_user_policies: require('./ops/iam_list_user_policies.js'),
     post_list_user_tags: require('./ops/iam_list_user_tags.js'),
+    post_tag_user: require('./ops/iam_tag_user'),
+    post_untag_user: require('./ops/iam_untag_user'),
     post_list_virtual_mfa_devices: require('./ops/iam_list_virtual_mfa_devices.js'),
     post_put_user_policy: require('./ops/iam_put_user_policy.js'),
 });

@@ -211,19 +211,24 @@ async function generate_account_keys(req) {
     if (account.is_support) {
         throw new RpcError('FORBIDDEN', 'Cannot update support account');
     }
-    const access_keys = cloud_utils.generate_access_keys();
-    const decrypted_access_keys = _.cloneDeep(access_keys);
-    access_keys.secret_key = system_store.master_key_manager.encrypt_sensitive_string_with_master_key_id(
-        access_keys.secret_key, account.master_key_id._id);
-    access_keys.deactivated = false;
-
+    const account_access_keys = account.access_keys || [];
+    // Encrypt the secret_key before saving it againg other wise secret_key saved without encrypt
+    if (account_access_keys.length > 0) {
+        account_access_keys[0].secret_key = system_store.master_key_manager.encrypt_sensitive_string_with_master_key_id(
+                        account_access_keys[0].secret_key, account.master_key_id._id);
+    }
+    const access_key_obj = cloud_utils.generate_access_keys();
+    const decrypted_access_keys = _.cloneDeep(access_key_obj);
+    access_key_obj.secret_key = system_store.master_key_manager.encrypt_sensitive_string_with_master_key_id(
+        access_key_obj.secret_key, account.master_key_id._id);
+    access_key_obj.deactivated = false;
+    account_access_keys.push(access_key_obj);
     await system_store.make_changes({
         update: {
             accounts: [{
                 _id: account._id,
-                access_keys: [
-                    access_keys
-                ]
+                access_keys:
+                    account_access_keys
             }]
         }
     });
@@ -362,12 +367,19 @@ function _check_if_account_exists(action, username, requesting_account) {
 function _check_root_account_owns_user(root_account, user_account) {
     if (user_account.owner === undefined) return false;
     let root_account_id;
+    let owner_account_id;
     if (typeof root_account._id === 'object') {
         root_account_id = String(root_account._id);
     } else {
         root_account_id = root_account._id;
     }
-    return root_account_id === user_account.owner;
+
+    if (typeof user_account.owner === 'object') {
+        owner_account_id = String(user_account.owner._id);
+    } else {
+        owner_account_id = user_account.owner._id;
+    }
+    return root_account_id === owner_account_id;
 }
 
 function _check_if_requesting_account_is_root_account(action, requesting_account, user_details = {}) {
@@ -493,7 +505,6 @@ function _throw_error_perform_action_on_another_root_account(action, requesting_
 }
 
 function _check_access_key_belongs_to_account(action, requested_account, access_key_id) {
-    console.log("_check_access_key_belongs_to_account. ====>>", requested_account.access_keys, access_key_id);
     const is_access_key_belongs_to_account = _check_specific_access_key_exists(requested_account.access_keys, access_key_id);
     if (!is_access_key_belongs_to_account) {
         _throw_error_no_such_entity_access_key(action, access_key_id);
@@ -517,7 +528,7 @@ function _check_specific_access_key_inactive(action, access_key_to_find, request
         const access_key = access_key_obj.access_key instanceof SensitiveString ?
                                 access_key_obj.access_key.unwrap() : access_key_obj.access_key;
         if (access_key_to_find === access_key) {
-            if (!_check_access_key_is_deactivated(access_key_obj.deactivated)) {
+            if (!_check_access_key_is_deactivated(_get_access_key_status(access_key_obj.deactivated))) {
                 _throw_error_delete_conflict(action, requested_account, resource_name);
             }
         }
@@ -581,10 +592,11 @@ function _check_root_account(account) {
 }
 
 function _check_access_key_is_deactivated(status) {
+    console.log('_check_access_key_is_deactivated ===>>>', status);
     return status === ACCESS_KEY_STATUS_ENUM.INACTIVE;
 }
 
- function _get_access_key_status(deactivated) {
+function _get_access_key_status(deactivated) {
     // we would like the default to be Active (so when it is undefined it would be Active)
     const status = deactivated ? ACCESS_KEY_STATUS_ENUM.INACTIVE : ACCESS_KEY_STATUS_ENUM.ACTIVE;
     return status;

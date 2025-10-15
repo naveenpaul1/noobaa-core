@@ -4,7 +4,8 @@
 const _ = require('lodash');
 const s3_utils = require('../s3/s3_utils');
 const { IamError } = require('./iam_errors');
-const { AWS_IAM_PATH_REGEXP, AWS_IAM_LIST_MARKER, AWS_IAM_ACCESS_KEY_INPUT_REGEXP } = require('../../util/string_utils');
+const { AWS_IAM_PATH_REGEXP, AWS_IAM_LIST_MARKER, AWS_IAM_ACCESS_KEY_INPUT_REGEXP,
+    TAG_KEY_REGEXP, TAG_VALUE_REGEXP } = require('../../util/string_utils');
 const iam_constants = require('./iam_constants');
 const { RpcError } = require('../../rpc');
 const validation_utils = require('../../util/validation_utils');
@@ -90,10 +91,145 @@ function validate_params(action, params) {
             validate_user_params(action, params);
         } else if (action.includes('access_key')) {
             validate_access_keys_params(action, params);
+        } else if (action.includes('tag')) {
+            validate_tags_params(action, params);
         } else {
             throw new RpcError('INTERNAL_ERROR', `${action} is not supported`);
         }
 }
+
+/**
+ * validate_tags_params will call the aquivalent function for each action in tag API
+ * @param {string} action
+ * @param {object} params
+ */
+function validate_tags_params(action, params) {
+    switch (action) {
+        case iam_constants.IAM_ACTIONS.TAG_USER:
+            validate_tag_user(params);
+          break;
+        case iam_constants.IAM_ACTIONS.GET_USER:
+            validate_untag_user(params);
+          break;
+        case iam_constants.IAM_ACTIONS.UPDATE_USER:
+            validate_list_user_tags(params);
+          break;
+        default:
+          throw new RpcError('INTERNAL_ERROR', `${action} is not supported`);
+      }
+}
+
+/**
+ * validate_list_user_tags checks the params for tag_user action
+ * @param {object} params
+ */
+function validate_list_user_tags(params) {
+    try {
+        check_required_username(params);
+        validation_utils.validate_username(params.username, iam_constants.IAM_PARAMETER_NAME.USERNAME);
+    } catch (err) {
+        translate_rpc_error(err);
+    }
+}
+
+/**
+ * validate_untag_user checks the params for tag_user action
+ * @param {object} params
+ */
+function validate_untag_user(params) {
+    try {
+        check_required_username(params);
+        validation_utils.validate_username(params.username, iam_constants.IAM_PARAMETER_NAME.USERNAME);
+        validate_tag_key(params.tag_keys, iam_constants.IAM_PARAMETER_NAME.TAGS);
+    } catch (err) {
+        translate_rpc_error(err);
+    }
+}
+
+
+
+
+/**
+ * validate_tag_key checks if the username was set
+ * @param {string[]} tag_keys
+ */
+function validate_tag_key(tag_keys, parameter_name = iam_constants.IAM_PARAMETER_NAME.TAGS) {
+    try {
+        // type check
+        validation_utils._type_check_input('string[]', tag_keys, parameter_name);
+        // length check
+        if (tag_keys.length === 0) {
+            const message_with_details = `The specified value for ${_.lowerFirst(parameter_name)} is invalid.`;
+            const { code, http_code, type } = IamError.ValidationError;
+            throw new IamError({ code, message: message_with_details, http_code, type });
+        }
+
+        for (const key of tag_keys) {
+            // regex check
+            const valid_key = TAG_KEY_REGEXP.test(key);
+            if (!valid_key) {
+                const message_with_details = `The specified value for ${_.lowerFirst(parameter_name)} is invalid. ` +
+                `It must contain only alphanumeric characters and/or the following: +=,.@_-`;
+                const { code, http_code, type } = IamError.ValidationError;
+                    throw new IamError({ code, message: message_with_details, http_code, type });
+            }
+        }
+    } catch (err) {
+        translate_rpc_error(err);
+    }
+}
+
+/**
+ * validate_tag_user checks the params for tag_user action
+ * @param {object} params
+ */
+function validate_tag_user(params) {
+    try {
+        check_required_username(params);
+        validation_utils.validate_username(params.username, iam_constants.IAM_PARAMETER_NAME.USERNAME);
+        validate_tag_key_and_value(params.tags, iam_constants.IAM_PARAMETER_NAME.TAGS);
+    } catch (err) {
+        translate_rpc_error(err);
+    }
+}
+
+/**
+ * validate_tag_key_and_value checks if the username was set
+ * @param {object[]} tags
+ */
+function validate_tag_key_and_value(tags, parameter_name = iam_constants.IAM_PARAMETER_NAME.TAGS) {
+    try {
+        // type check
+        validation_utils._type_check_input('Object', tags, parameter_name);
+        // length check
+        // const min_length = 1;
+        if (tags.length === 0) {
+            const message_with_details = `The specified value for ${_.lowerFirst(parameter_name)} is invalid.`;
+            const { code, http_code, type } = IamError.ValidationError;
+            throw new IamError({ code, message: message_with_details, http_code, type });
+        }
+        for (const tag of tags) {
+            if (!tag.key || !tag.value) {
+                const message_with_details = `The specified value for ${_.lowerFirst(parameter_name)} is invalid.`;
+                const { code, http_code, type } = IamError.ValidationError;
+                throw new IamError({ code, message: message_with_details, http_code, type });
+            }
+            // regex check
+            const valid_key = TAG_KEY_REGEXP.test(tag.key);
+            const valid_value = TAG_VALUE_REGEXP.test(tag.value);
+            if (!valid_key || !valid_value) {
+                const message_with_details = `The specified value for ${_.lowerFirst(parameter_name)} is invalid. ` +
+                `It must contain only alphanumeric characters and/or the following: +=,.@_-`;
+                const { code, http_code, type } = IamError.ValidationError;
+                    throw new IamError({ code, message: message_with_details, http_code, type });
+            }
+        }
+        return true;
+    } catch (err) {
+        translate_rpc_error(err);
+    }
+}
+
 
 /**
  * validate_user_params will call the aquivalent function for each action in user API

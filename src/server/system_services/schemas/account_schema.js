@@ -28,7 +28,7 @@ module.exports = {
         password: { wrapper: SensitiveString }, // bcrypted password - DEPRECATED
         next_password_change: { date: true }, // DEPRECATED
         // TODO: Check NSFS behaviour for account and iam user
-        owner: { type: 'string' },
+        owner: { objectid: true },
         tagging: {
             $ref: 'common_api#/definitions/tagging',
         },
