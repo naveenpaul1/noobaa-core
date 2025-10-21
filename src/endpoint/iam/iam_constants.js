@@ -16,6 +16,10 @@ const IAM_ACTIONS = Object.freeze({
     TAG_USER: 'tag_user',
     UNTAG_USER: 'untag_user',
     LIST_USER_TAGS: 'list_user_tags',
+    PUT_USER_POLICY: 'put_user_policy',
+    DELETE_USER_POLICY: 'delete_user_policy',
+    GET_USER_POLICY: 'get_user_policy',
+    LIST_USER_POLICIES: 'list_user_policies',
 });
 
 // key: action - the function name on accountspace_fs (snake case style)
@@ -33,8 +37,12 @@ const ACTION_MESSAGE_TITLE_MAP = Object.freeze({
     'delete_access_key': 'DeleteAccessKey',
     'list_access_keys': 'ListAccessKeys',
     'tag_user': 'TagUser',
-    'untag_user': 'untag_user',
-    'list_user_tags': 'list_user_tags',
+    'untag_user': 'UntagUser',
+    'list_user_tags': 'ListUserTags',
+    'put_user_policy': 'PutUserPolicy',
+    'delete_user_policy': 'DeleteUserPolicy',
+    'get_user_policy': 'GetUserPolicy',
+    'list_user_policies': 'ListUserPolicies',
 
 });
 
@@ -64,6 +72,8 @@ const IAM_PARAMETER_NAME = Object.freeze({
     USERNAME: 'UserName',
     NEW_USERNAME: 'NewUserName',
     TAGS: 'Tags',
+    POLICY_NAME: 'PolicyName',
+    POLICY_DOCUMENT: 'PolicyDocument',
 });
 
 const IAM_SPLIT_CHARACTERS = ':';

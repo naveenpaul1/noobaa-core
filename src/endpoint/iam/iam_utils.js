@@ -87,7 +87,9 @@ function parse_max_items(input_max_items) {
  * @param {object} params
  */
 function validate_params(action, params) {
-        if (action.includes('user')) {
+        if (action.includes('polic')) {
+            validate_policy_params(action, params);
+        } else if (action.includes('user')) {
             validate_user_params(action, params);
         } else if (action.includes('access_key')) {
             validate_access_keys_params(action, params);
@@ -96,6 +98,46 @@ function validate_params(action, params) {
         } else {
             throw new RpcError('INTERNAL_ERROR', `${action} is not supported`);
         }
+}
+
+/**
+ * validate_policy_params will call the aquivalent function for each action in tag API
+ * @param {string} action
+ * @param {object} params
+ */
+function validate_policy_params(action, params) {
+    switch (action) {
+        case iam_constants.IAM_ACTIONS.PUT_USER_POLICY:
+            validate_put_user_policy(params);
+          break;
+        case iam_constants.IAM_ACTIONS.DELETE_USER_POLICY:
+            //validate_delete_user_policy(params);
+          break;
+        case iam_constants.IAM_ACTIONS.GET_USER_POLICY:
+            //validate_get_user_policy(params);
+          break;
+        case iam_constants.IAM_ACTIONS.LIST_USER_POLICIES:
+            //validate_list_user_policies(params);
+          break;
+        default:
+          throw new RpcError('INTERNAL_ERROR', `${action} is not supported`);
+      }
+}
+
+
+/**
+ * validate_untag_user checks the params for tag_user action
+ * @param {object} params
+ */
+function validate_put_user_policy(params) {
+    try {
+        check_required_username(params);
+        check_required_policy_name(params);
+        validation_utils.validate_username(params.username, iam_constants.IAM_PARAMETER_NAME.USERNAME);
+        validation_utils.validate_username(params.policy_name, iam_constants.IAM_PARAMETER_NAME.POLICY_NAME);
+    } catch (err) {
+        translate_rpc_error(err);
+    }
 }
 
 /**
@@ -145,9 +187,6 @@ function validate_untag_user(params) {
         translate_rpc_error(err);
     }
 }
-
-
-
 
 /**
  * validate_tag_key checks if the username was set
@@ -291,6 +330,14 @@ function validate_access_keys_params(action, params) {
  */
 function check_required_username(params) {
     check_required_key(params.username, 'user-name');
+}
+
+/**
+ * check_required_policy_name checks if the policy name was set
+ * @param {object} params
+ */
+function check_required_policy_name(params) {
+    check_required_key(params.policy_name, 'policy-name');
 }
 
 /**

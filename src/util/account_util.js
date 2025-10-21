@@ -307,34 +307,44 @@ function validate_assume_role_policy(policy) {
 }
 
 async function put_user_policy(req) {
-    const updates = _.uniqBy([], '_id');
-    const policy_id = system_store.new_system_store_id();
-    const iam_policy = {
-        _id: policy_id,
-        name: req.rpc_params.policy_name,
-        policy_type: req.rpc_params.policy_type,
-        iam_policy: req.rpc_params.s3_policy
-    };
+    try {
+        const updates = _.uniqBy([], '_id');
+        const policy_id = system_store.new_system_store_id();
+        const iam_policy = {
+            _id: policy_id,
+            name: req.rpc_params.policy_name,
+            policy_arn: `arn:aws:iam::${req.rpc_params.account._id}:policy/${req.rpc_params.policy_name}`,
+            policy_type: req.rpc_params.policy_type,
+            iam_policy: req.rpc_params.s3_policy
+        };
 
+        // TODO: Existing policy replased
+        await system_store.make_changes({
+            insert: {
+                iam_policies: [iam_policy],
+            }
+        });
+        //TODO: multiple policies
 
-    // TODO: Existing policy replased
-    await system_store.make_changes({
-        insert: {
-            iam_policies: [iam_policy],
+        const iam_policies = [];
+        for (const policy of req.rpc_params.account.iam_policies) {
+            iam_policies.push(policy.iam_policy);
         }
-    });
-
-    //TODO:  multiple POLIcies
-    updates.push({
-        _id: req.rpc_params.account_id,
-        iam_policies: [policy_id]
-    });
-
-    await system_store.make_changes({
-        update: {
-            accounts: updates
-        }
-    });
+        iam_policies.push(policy_id);
+        updates.push({
+            _id: req.rpc_params.account._id,
+            iam_policies: iam_policies
+        });
+        await system_store.make_changes({
+            update: {
+                accounts: updates
+            }
+        });
+    } catch (err) {
+        const message_with_details = `The policy with name ${req.rpc_params.policy_name} cannot be saved.`;
+        const { code, http_code, type } = IamError.MalformedPolicyDocument;
+        throw new IamError({ code, message: message_with_details, http_code, type });
+    }
 }
 
 function _check_if_user_does_not_have_inline_policy_before_deletion(action, account_to_delete) {
@@ -434,10 +444,20 @@ function _check_if_requested_is_owned_by_root_account(action, requesting_account
 
 function _check_number_of_access_key_array(action, requested_account) {
     if (requested_account.access_keys && requested_account.access_keys.length >= MAX_NUMBER_OF_ACCESS_KEYS) {
-        dbg.error(`AccountSpaceFS.${action} requested account is not owned by root account `,
-        requested_account);
+        dbg.error(`AccountSpaceFS.${action} cannot exceed quota for AccessKeysPerUser `,
+        requested_account.name);
         const message_with_details = `Cannot exceed quota for AccessKeysPerUser: ${MAX_NUMBER_OF_ACCESS_KEYS}.`;
         const { code, http_code, type } = IamError.LimitExceeded;
+        throw new IamError({ code, message: message_with_details, http_code, type });
+    }
+}
+
+function _check_if_policy_exists_for_user(action, policy_arn, policy_name) {
+    const policy = system_store.data.systems[0].iam_policy_by_arn && system_store.data.systems[0].iam_policy_by_arn[policy_arn];
+    if (policy) {
+        dbg.error(`AccountSpaceNB.${action} username does not exist`, policy_name);
+        const message_with_details = `A policy called ${policy_name} already exists. Duplicate names are not allowed.`;
+        const { code, http_code, type } = IamError.NoSuchEntity;
         throw new IamError({ code, message: message_with_details, http_code, type });
     }
 }
@@ -691,6 +711,7 @@ exports.validate_create_account_params = validate_create_account_params;
 exports._check_if_account_exists = _check_if_account_exists;
 exports._get_access_key_status = _get_access_key_status;
 exports._returned_username = _returned_username;
+exports._check_if_policy_exists_for_user = _check_if_policy_exists_for_user;
 exports._check_specific_access_key_inactive = _check_specific_access_key_inactive;
 exports._list_access_keys_from_account = _list_access_keys_from_account;
 exports._check_access_key_is_deactivated = _check_access_key_is_deactivated;

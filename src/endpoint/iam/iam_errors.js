@@ -203,5 +203,13 @@ IamError.ExpiredToken = Object.freeze({
     type: error_type_enum.SENDER,
 });
 
+// Policy errors
+IamError.MalformedPolicyDocument = Object.freeze({
+    code: 'MalformedPolicyDocument',
+    message: 'The request was rejected because the policy document was malformed.',
+    http_code: 400,
+    type: error_type_enum.SENDER,
+});
+
 // EXPORTS
 exports.IamError = IamError;

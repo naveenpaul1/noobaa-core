@@ -269,10 +269,9 @@ function _parse_condition_keys(condition_statement) {
     }
 }
 
-async function validate_s3_policy(policy, bucket_name, get_account_handler) {
+async function validate_s3_policy(policy, bucket_name, get_account_handler, get_bucket_handler = undefined) {
     const all_op_names = _.flatten(_.compact(_.flatMap(OP_NAME_TO_ACTION, action => [action.regular, action.versioned])));
     for (const statement of policy.Statement) {
-
         const statement_principal = statement.Principal || statement.NotPrincipal;
         if (statement_principal.AWS) {
             for (const principal of _.flatten([statement_principal.AWS])) {
@@ -289,8 +288,17 @@ async function validate_s3_policy(policy, bucket_name, get_account_handler) {
         for (const resource of _.flatten([statement.Resource || statement.NotResource])) {
             const resource_bucket_part = resource.split('/')[0];
             const resource_regex = RegExp(`^${resource_bucket_part.replace(qm_regex, '.?').replace(ar_regex, '.*')}$`);
-            if (!resource_regex.test('arn:aws:s3:::' + bucket_name)) {
+            const resource_bucket_name = bucket_name || resource_bucket_part.replace('arn:aws:s3:::', '');
+            console.log("resource_bucket_name =====>>>", resource_bucket_name);
+            if (bucket_name && !resource_regex.test('arn:aws:s3:::' + resource_bucket_name)) {
                 throw new RpcError('MALFORMED_POLICY', 'Policy has invalid resource', { detail: resource });
+            }
+            if (get_bucket_handler) {
+                const bucket = await get_bucket_handler(resource_bucket_name);
+                console.log("resource_bucket_name @@@@@@ =====>>>", bucket);
+                if (!bucket) {
+                    throw new RpcError('MALFORMED_POLICY', 'Policy has invalid resource', { detail: resource });
+                }
             }
         }
         for (const action of _.flatten([statement.Action || statement.NotAction])) {

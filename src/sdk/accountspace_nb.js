@@ -10,6 +10,7 @@ const system_store = require('..//server/system_services/system_store').get_inst
 // const { account_cache } = require('./object_sdk');
 const IamError = require('../endpoint/iam/iam_errors').IamError;
 const native_fs_utils = require('../util/native_fs_utils');
+const bucket_policy_utils = require('../endpoint/s3/s3_bucket_policy_utils');
 const { IAM_ACTIONS, IAM_DEFAULT_PATH, ACCESS_KEY_STATUS_ENUM,
     IAM_SPLIT_CHARACTERS } = require('../endpoint/iam/iam_constants');
 
@@ -48,8 +49,6 @@ class AccountSpaceNB {
     async create_user(params, account_sdk) {
 
         const action = IAM_ACTIONS.CREATE_USER;
-        //const requesting_account = account_sdk.requesting_account;
-        //const root_account = _.find(system_store.data.accounts, account => account.name.unwrap() === requesting_account.name.unwrap());
         const requesting_account = system_store.get_account_by_email(account_sdk.requesting_account.email);
         account_util._check_if_requesting_account_is_root_account(action, requesting_account,
                 { username: params.username, iam_path: params.iam_path });
@@ -125,6 +124,8 @@ class AccountSpaceNB {
         const requested_account = system_store.get_account_by_email(account_name);
         let new_iam_path = requested_account.iam_path;
         let new_user_name = requested_account.name.unwrap();
+        // TODO: check new user name is existing
+        // root_account is same as requesting_account
         const root_account = _.find(system_store.data.accounts, account => account.name.unwrap() === requesting_account.name.unwrap());
         account_util._check_if_requested_account_is_root_account_or_IAM_user(action, requesting_account, requested_account);
         account_util._check_if_requested_is_owned_by_root_account(action, root_account, requested_account);
@@ -465,7 +466,7 @@ class AccountSpaceNB {
         // TODO : Invlidate cache
         // TODO: Only S3 policy
         // AWS Access not given without policy. Disscus
-        const action = IAM_ACTIONS.LIST_ACCESS_KEYS;
+        const action = IAM_ACTIONS.PUT_USER_POLICY;
         const requesting_account = system_store.get_account_by_email(account_sdk.requesting_account.email);
         const account_name = new SensitiveString(`${params.username}:${requesting_account.name.unwrap()}`);
         const requested_account = system_store.get_account_by_email(account_name);
@@ -473,11 +474,25 @@ class AccountSpaceNB {
         await account_util._check_if_account_exists(action, params.username, requesting_account);
         account_util._check_if_requested_account_is_root_account_or_IAM_user(action, requesting_account, requested_account);
         account_util._check_if_requested_is_owned_by_root_account(action, requesting_account, requested_account);
+        const policy_arn = `arn:aws:iam::${requesting_account._id.toString()}:policy/${params.policy_name}`;
+        account_util._check_if_policy_exists_for_user(action, policy_arn, params.policy_name);
 
-        const account = system_store.get_account_by_email(account_name);
-         const req = {
+        // calling method with last bucket name in statment.resource list.
+        // Not doing the buckeT validation here, Only principle and policy formate is validated.
+        try {
+            console.log(". params.policy_document. ===>>", JSON.parse(params.policy_document));
+            await bucket_policy_utils.validate_s3_policy(JSON.parse(params.policy_document), undefined,
+                principal => system_store.get_account_by_email(principal),
+                bucket_name => system_store.data.systems[0].buckets_by_name[bucket_name]);
+        } catch (err) {
+            const message_with_details = `The policy with name ${params.policy_name} cannot be saved.`;
+            const { code, http_code, type } = IamError.MalformedPolicyDocument;
+            throw new IamError({ code, message: message_with_details, http_code, type });
+        }
+        const req = {
             rpc_params: {
-                account_id: account._id,
+                account_id: requested_account._id,
+                account: requested_account,
                 policy_type: 'INLINE',
                 s3_policy: JSON.parse(params.policy_document),
                 policy_name: params.policy_name,

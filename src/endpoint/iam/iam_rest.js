@@ -109,12 +109,12 @@ const IAM_OPS = js_utils.deep_freeze({
     post_list_service_specific_credentials: require('./ops/iam_list_service_specific_credentials.js'),
     post_list_signing_certificates: require('./ops/iam_list_signing_certificates.js'),
     post_list_ssh_public_keys: require('./ops/iam_list_ssh_public_keys.js'),
+    post_put_user_policy: require('./ops/iam_put_user_policy.js'),
     post_list_user_policies: require('./ops/iam_list_user_policies.js'),
     post_list_user_tags: require('./ops/iam_list_user_tags.js'),
     post_tag_user: require('./ops/iam_tag_user'),
     post_untag_user: require('./ops/iam_untag_user'),
     post_list_virtual_mfa_devices: require('./ops/iam_list_virtual_mfa_devices.js'),
-    post_put_user_policy: require('./ops/iam_put_user_policy.js'),
 });
 
 async function iam_rest(req, res) {

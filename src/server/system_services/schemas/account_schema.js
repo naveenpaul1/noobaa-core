@@ -34,10 +34,17 @@ module.exports = {
         },
         is_iam: { type: 'boolean' },
         iam_arn: { type: 'string' },
+        iam_path: { type: 'string' },
         iam_policies: {
             type: 'array',
             items: {
-                objectid: true // iam policy ids
+                type: 'object',
+                required: ['iam_policy'],
+                properties: {
+                    iam_policy: {
+                        objectid: true // iam policy ids
+                    }
+                }
             },
         },
 

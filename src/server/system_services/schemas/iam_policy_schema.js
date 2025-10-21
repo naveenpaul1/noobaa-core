@@ -8,6 +8,7 @@ module.exports = {
     required: [
         '_id',
         'name',
+        'policy_arn',
         'policy_type',
         'iam_policy'
     ],
@@ -15,13 +16,17 @@ module.exports = {
         // identity
         _id: { objectid: true },
         deleted: { date: true },
-        name: {type: 'string'},
+        name: { type: 'string' },
+        policy_arn: { type: 'string' },
         policy_type: {
             type: 'string',
             enum: ['INLINE', 'MANAGED']
         },
         iam_policy: {
             $ref: 'common_api#/definitions/bucket_policy',
+        },
+        last_update: {
+            idate: true
         },
     }
 };

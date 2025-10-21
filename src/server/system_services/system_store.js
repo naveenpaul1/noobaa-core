@@ -28,6 +28,7 @@ const tiering_policy_indexes = require('./schemas/tiering_policy_indexes');
 const tier_indexes = require('./schemas/tier_indexes');
 const pool_indexes = require('./schemas/pool_indexes');
 const agent_config_indexes = require('./schemas/agent_config_indexes');
+const iam_policy_indexes = require('./schemas/iam_policy_indexes');
 
 const P = require('../../util/promise');
 const dbg = require('../../util/debug_module')(__filename);
@@ -97,10 +98,10 @@ const COLLECTIONS = [{
     name: 'iam_policies',
     schema: iam_policy_schema,
     mem_indexes: [{
-        name: 'iam_policy_by_name',
-        key: 'name'
+        name: 'iam_policy_by_arn',
+        key: 'policy_arn'
     }],
-    db_indexes: account_indexes,
+    db_indexes: iam_policy_indexes,
 }, {
     name: 'buckets',
     schema: bucket_schema,
