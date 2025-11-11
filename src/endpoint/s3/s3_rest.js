@@ -12,6 +12,7 @@ const s3_logging = require('./s3_bucket_logging');
 const time_utils = require('../../util/time_utils');
 const http_utils = require('../../util/http_utils');
 const signature_utils = require('../../util/signature_utils');
+const iam_utils = require('../../endpoint/iam/iam_utils');
 const config = require('../../../config');
 const s3_utils = require('./s3_utils');
 
@@ -254,6 +255,8 @@ async function authorize_request_policy(req) {
     const account = req.object_sdk.requesting_account;
     const account_identifier_name = req.object_sdk.nsfs_config_root ? account.name.unwrap() : account.email.unwrap();
     const account_identifier_id = req.object_sdk.nsfs_config_root ? account._id : undefined;
+    const arn = account.owner ? iam_utils.create_arn_for_user(account.owner, account.name.unwrap().split(':')[0], account.iam_path) :
+                                    iam_utils.create_arn_for_account(account._id);
 
     // deny delete_bucket permissions from bucket_claim_owner accounts (accounts that were created by OBC from openshift\k8s)
     // the OBC bucket can still be delete by normal accounts according to the access policy which is checked below
@@ -304,9 +307,9 @@ async function authorize_request_policy(req) {
     }
     if (permission_by_id === "DENY") throw new S3Error(S3Error.AccessDenied);
 
-    if ((!account_identifier_id || permission_by_id !== "DENY") && account.owner === undefined) {
+    if ((!account_identifier_id || permission_by_id !== "DENY")) {
         permission_by_name = await s3_bucket_policy_utils.has_bucket_policy_permission(
-            s3_policy, account_identifier_name, method, arn_path, req, public_access_block?.restrict_public_buckets
+            s3_policy, arn, method, arn_path, req, public_access_block?.restrict_public_buckets
         );
         dbg.log3('authorize_request_policy: permission_by_name', permission_by_name);
     }

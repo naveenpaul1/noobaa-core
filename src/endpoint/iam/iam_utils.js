@@ -47,6 +47,15 @@ function create_arn_for_user(account_id, username, iam_path) {
 }
 
 /**
+ * create_arn_for_account creates the AWS ARN for account
+ * see: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_identifiers.html#identifiers-arns
+ * @param {string} account_id (the root user account id)
+ */
+function create_arn_for_account(account_id) {
+    return `arn:aws:iam::${account_id}:root`;
+}
+
+/**
  * get_action_message_title returns the full action name
  * @param {string} action (The action name as it is in AccountSpace)
  */
@@ -815,6 +824,7 @@ function validate_list_user_tags_params(params) {
 // EXPORTS
 exports.format_iam_xml_date = format_iam_xml_date;
 exports.create_arn_for_user = create_arn_for_user;
+exports.create_arn_for_account = create_arn_for_account;
 exports.create_arn_for_root = create_arn_for_root;
 exports.get_action_message_title = get_action_message_title;
 exports.check_iam_path_was_set = check_iam_path_was_set;
