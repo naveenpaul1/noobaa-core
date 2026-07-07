@@ -38,10 +38,13 @@ async function assume_role_with_web_identity(req) {
     const access_keys = await req.sts_sdk.generate_temp_access_keys();
 
     // CHANGED: Include session tags in session token if present (for OIDC/Keycloak)
+    console.log("assumed_role_name ====>>>", assumed_role.role_config.name, assumed_role)
     const session_token_data = {
         access_key: access_keys.access_key.unwrap(),
         secret_key: access_keys.secret_key.unwrap(),
-        assumed_role_access_key: assumed_role.access_key
+        account_id: assumed_role.role_config.account_id,
+        assumed_role_access_key: assumed_role.access_key,
+        assumed_role_name: assumed_role.role_config.name,
     };
     // Add session tags if present (from Keycloak/OIDC tokens)
     if (assumed_role.session_tags && Object.keys(assumed_role.session_tags).length > 0) {

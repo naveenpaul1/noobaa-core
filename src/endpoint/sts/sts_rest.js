@@ -148,7 +148,7 @@ async function authorize_request(req) {
 async function authorize_request_policy(req) {
     if (req.op_name !== 'post_assume_role' && req.op_name !== 'post_assume_role_with_web_identity') return;
 
-    const assume_role_policy = await get_assume_role_policy(req);
+    const assume_role_policy = await get_assume_role_trust_policy(req);
     if (!assume_role_policy) throw new StsError(StsError.AccessDeniedException);
     const method = _get_method_from_req(req);
     const cur_account_email = req.sts_sdk.requesting_account && req.sts_sdk.requesting_account.email.unwrap();
@@ -345,17 +345,18 @@ function fetch_web_identity_info(req) {
 }
 
 /**
- * get_assume_role_policy retrieves the assume role policy document
+ * get_assume_role_trust_policy retrieves the assume role policy document(trust policy)
  * @param {Object} req - Request object
  * @returns {Promise<Object>} - Assume role policy document
  */
-async function get_assume_role_policy(req) {
+async function get_assume_role_trust_policy(req) {
     const role_arn = req.body.role_arn;
     const role_name = role_arn.slice(role_arn.lastIndexOf('/') + 1);
+    const account_id = role_arn.split(':')[4];
     // TODO: Get the iam_role from cache
-    const iam_role = _.find(system_store.data.iam_roles || [], role => {
+    const iam_role = _.find(system_store.data?.iam_roles || [], role => {
         if (role.deleted) return false;
-        return role.name === role_name;
+        return role.name === role_name && role.owner._id.toString() === account_id;
     });
     return iam_role?.assume_role_policy_document;
 }

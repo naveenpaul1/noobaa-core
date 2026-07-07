@@ -17,6 +17,8 @@ const s3_utils = require('./s3_utils');
 const { create_detailed_message_for_iam_user_access,
     get_owner_account_id,
     authorize_request_iam_policy_impl } = require('../iam/iam_utils'); // for IAM policy
+// TODO: remove once iam role cache ready
+const system_store = require('../../server/system_services/system_store').get_instance();
 
 const S3_MAX_BODY_LEN = 4 * 1024 * 1024;
 
@@ -233,6 +235,7 @@ async function authorize_request(req) {
     await req.object_sdk.load_requesting_account(req);
     await req.object_sdk.authorize_request_account(req);
     await authorize_request_iam_policy(req); // authorize_request_iam_policy(req) is for users only
+    await authorize_request_iam_role_policy(req)
     // authorize_request_policy(req) is supposed to
     // allow owners access unless there is an explicit DENY policy
     await authorize_request_policy(req);
@@ -354,6 +357,43 @@ async function authorize_request_iam_policy(req) {
 
     if (authorize_result === true || authorize_result === undefined) return;
     _throw_iam_access_denied_error_for_s3_operation(authorize_result.account, method, authorize_result.resource_arn);
+}
+
+// TODO: Update for iam role policy
+async function authorize_request_iam_role_policy(req) {
+    const auth_token = req.object_sdk.get_auth_token();
+    console.log('auth_token ===>>>', auth_token);
+    const assumed_role_name = auth_token.temp_assumed_role_name;
+    const account_id = auth_token.temp_account_id;
+    // Authorization based on an IAM role is valid only for S3 requests sent with a temporary session token
+    if (!assumed_role_name) return;
+
+    // TODO: Get the iam_role from cache
+    const iam_role = _.find(system_store.data?.iam_roles || [], role => {
+        if (role.deleted) return false;
+        return role.name === assumed_role_name && role.owner._id.toString() === account_id;
+    });
+    const resource_arn = _get_arn_from_req_path(req) || '*'; // special case for list all buckets in an account
+    const method = _get_method_from_req(req);
+
+    if (!iam_role) {
+        _throw_iam_access_denied_error_for_s3_operation(undefined, method, resource_arn);
+    }
+    const iam_role_policies = iam_role.iam_role_policies || [];
+
+    if (!iam_role_policies || iam_role_policies.length === 0) {
+        if (req.object_sdk.nsfs_config_root) return; // We do not have IAM Role policies in NC yet
+        dbg.error('authorize_request_iam_role_policy: IAM role has no policies');
+        _throw_iam_access_denied_error_for_s3_operation(undefined, method, resource_arn);
+    }
+
+    // parallel policy check
+    const permission_results = await Promise.all(iam_role_policies.map(policy =>
+    access_policy_utils.has_access_policy_permission(
+        policy.policy_document, undefined, method, resource_arn, req, { should_pass_principal: false })
+    ));
+    if (permission_results.includes('DENY')) _throw_iam_access_denied_error_for_s3_operation(account, method, resource_arn);
+    if (!permission_results.includes('ALLOW')) _throw_iam_access_denied_error_for_s3_operation(account, method, resource_arn);
 }
 
 function _throw_iam_access_denied_error_for_s3_operation(requesting_account, method, resource_arn) {

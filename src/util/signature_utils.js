@@ -380,6 +380,8 @@ function authenticate_request_by_service(req, sdk) {
         auth_token.access_key = req.session_token.assumed_role_access_key;
         auth_token.temp_access_key = req.session_token.access_key;
         auth_token.temp_secret_key = req.session_token.secret_key;
+        auth_token.temp_account_id = req.session_token.account_id,
+        auth_token.temp_assumed_role_name = req.session_token.assumed_role_name;
     }
     sdk.set_auth_token(auth_token);
     check_request_expiry(req);
