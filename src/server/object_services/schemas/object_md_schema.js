@@ -77,6 +77,11 @@ module.exports = {
         // and ultimatly removed once the write is done
         upload_size: { type: 'integer' },
         upload_started: { objectid: true },
+        // Bytes and object count reserved in the bucket's realtime quota counters
+        // (quota_size_used / quota_quantity_used) for this in-progress upload.
+        // Cleared when the upload completes or is aborted.
+        realtime_quota_reserved_size: { type: 'integer' },
+        realtime_quota_reserved_quantity: { type: 'integer' },
         create_time: { date: true },
         // cache_last_valid_time is an optional property set for objects in cache buckets.
         // This property indicates the time when the cached object was in sync with the

@@ -15,7 +15,7 @@ const RAW_VALUE_FIELD_NAME = 'raw_value';
 
 class Quota {
     /**
-     * 
+     *
      * @param {any} quota_config - bucket quota configuration payload
      */
     constructor(quota_config) {
@@ -23,6 +23,7 @@ class Quota {
          this.size[RAW_VALUE_FIELD_NAME] = size_utils.size_unit_to_bigint(this.size.value, this.size.unit).toString();
          this.quantity = quota_config && quota_config.quantity ? quota_config.quantity : {'value': 0};
          this.quantity[RAW_VALUE_FIELD_NAME] = BigInt(this.quantity.value).toString();
+        this.enforce_quota = Boolean(quota_config && quota_config.enforce_quota);
     }
 
     /**
@@ -86,7 +87,32 @@ class Quota {
     }
 
     /**
-     * 
+     * @returns whether this quota configuration uses synchronous real-time enforcement.
+     */
+    is_enforce_quota() {
+        return this.enforce_quota;
+    }
+
+    /**
+     * Returns the size limit in bytes as a JavaScript number (safe for typical quota sizes).
+     * Returns 0 when no size limit is configured.
+     */
+    get_size_limit_bytes() {
+        const raw = this.get_quota_by_size();
+        return raw === '0' ? 0 : Number(raw);
+    }
+
+    /**
+     * Returns the quantity limit as a JavaScript number.
+     * Returns 0 when no quantity limit is configured.
+     */
+    get_quantity_limit() {
+        const raw = this.get_quota_by_quantity();
+        return raw === '0' ? 0 : Number(raw);
+    }
+
+    /**
+     *
      * @returns - new quota config object without raw values
      */
     get_config() {
@@ -96,6 +122,9 @@ class Quota {
         }
         if (this.quantity.value > 0) {
             quota_config.quantity = _.omit(this.quantity, RAW_VALUE_FIELD_NAME);
+        }
+        if (this.enforce_quota) {
+            quota_config.enforce_quota = true;
         }
         return quota_config;
     }

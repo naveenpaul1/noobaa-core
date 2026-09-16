@@ -1084,7 +1084,7 @@ mocha.describe('md_store', function() {
             await md_store.insert_object(unlocked);
             await md_store.insert_object(latest);
 
-            const deleted_count = await md_store.remove_noncurrent_versions({
+            const { deleted_count } = await md_store.remove_noncurrent_versions({
                 bucket_id,
                 noncurrent_days: 1,
                 limit: 100,

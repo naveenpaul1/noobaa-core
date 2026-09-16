@@ -1690,6 +1690,12 @@ module.exports = {
                             "minimum": 1
                         }
                     },
+                },
+                // When true, enables synchronous real-time quota enforcement.
+                // Uploads are rejected immediately (403) if they would exceed the limit.
+                // Only valid for empty buckets. Default quota mode remains async.
+                enforce_quota: {
+                    type: 'boolean'
                 }
             }
         },

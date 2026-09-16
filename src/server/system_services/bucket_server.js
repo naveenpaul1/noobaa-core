@@ -914,7 +914,7 @@ async function get_bucket_changes(req, update_request, bucket, tiering_policy) {
     }
 
     if (!_.isUndefined(quota)) {
-        get_bucket_changes_quota(req, bucket, quota, single_bucket_update, changes);
+        await get_bucket_changes_quota(req, bucket, quota, single_bucket_update, changes);
     }
 
     if (update_request.archive_policy || update_request.remove_archive_policy) {
@@ -1020,7 +1020,7 @@ function _validate_not_namespace_bucket(bucket) {
     }
 }
 
-function get_bucket_changes_quota(req, bucket, quota_config, single_bucket_update, changes) {
+async function get_bucket_changes_quota(req, bucket, quota_config, single_bucket_update, changes) {
     const quota_event = {
         event: 'bucket.quota',
         level: 'info',
@@ -1030,11 +1030,45 @@ function get_bucket_changes_quota(req, bucket, quota_config, single_bucket_updat
     };
 
     const quota = new Quota(quota_config);
+    if (quota.is_enforce_quota() && quota.is_empty_quota()) {
+        throw new RpcError('BAD_REQUEST',
+            'enforce_quota requires at least one limit (size or quantity) to be configured');
+    }
     if (quota.is_empty_quota()) {
-        single_bucket_update.$unset = { quota: 1 };
+        if (!single_bucket_update.$unset) single_bucket_update.$unset = {};
+        single_bucket_update.$unset.quota = 1;
+        single_bucket_update.$unset.quota_size_used = 1;
+        single_bucket_update.$unset.quota_quantity_used = 1;
         quota_event.desc = `Bucket quota was removed from ${bucket.name.unwrap()} by ${req.account && req.account.email.unwrap()}`;
     } else {
         if (!quota.is_valid_quota()) throw new RpcError('BAD_REQUEST', 'quota config values must be positive');
+
+        const enabling_enforce = quota.is_enforce_quota() && !(bucket.quota && bucket.quota.enforce_quota);
+        const disabling_enforce = !quota.is_enforce_quota() && bucket.quota && bucket.quota.enforce_quota;
+
+        if (enabling_enforce) {
+            if (bucket.namespace) {
+                throw new RpcError('BAD_REQUEST',
+                    'enforce_quota is not supported on namespace buckets');
+            }
+            // Check MD, not lagging storage_stats. Include in-progress uploads.
+            const has_objects = await MDStore.instance().has_any_objects_for_bucket(bucket._id);
+            if (has_objects) {
+                throw new RpcError('BAD_REQUEST',
+                    'enforce_quota mode can only be set on an empty bucket');
+            }
+            // Same $set as quota so counters initialize atomically with the flag.
+            // quota_size_used / quota_quantity_used are DB-authoritative hot counters —
+            // never copy them back from system_store memory.
+            single_bucket_update.quota_size_used = 0;
+            single_bucket_update.quota_quantity_used = 0;
+        } else if (disabling_enforce) {
+            // Switching away from enforce_quota — clear the realtime counters.
+            changes.updates.buckets.push({
+                _id: bucket._id,
+                $unset: { quota_size_used: 1, quota_quantity_used: 1 },
+            });
+        }
 
         quota.add_quota_alerts(system_store.data.systems[0]._id, bucket, changes.alerts);
 

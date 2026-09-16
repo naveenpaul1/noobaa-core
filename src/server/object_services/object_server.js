@@ -1,5 +1,5 @@
 /* Copyright (C) 2016 NooBaa */
-/*eslint max-lines: ["error", 2800]*/
+/*eslint max-lines: ["error", 3000]*/
 'use strict';
 
 require('../../util/fips');
@@ -29,6 +29,7 @@ const cloud_utils = require('../../util/cloud_utils');
 const system_utils = require('../utils/system_utils');
 const nodes_client = require('../node_services/nodes_client');
 const system_store = require('../system_services/system_store').get_instance();
+const realtime_quota = require('./realtime_quota');
 const { BucketStatsStore } = require('../analytic_services/bucket_stats_store');
 const { EndpointStatsStore } = require('../analytic_services/endpoint_stats_store');
 const { IoStatsStore } = require('../analytic_services/io_stats_store');
@@ -61,90 +62,110 @@ async function create_object_upload(req) {
     throw_if_maintenance(req);
     load_bucket(req);
     check_quota(req.bucket);
+    const quota_reservation = await realtime_quota.enforce(req.bucket, req.rpc_params.size, 1);
 
-    const encryption = _get_encryption_for_object(req);
-    const obj_id = MDStore.instance().make_md_id();
-    const info = {
-        _id: obj_id,
-        system: req.system._id,
-        bucket: req.bucket._id,
-        key: req.rpc_params.key,
-        content_type: req.rpc_params.content_type ||
-            mime.lookup(req.rpc_params.key) ||
-            'application/octet-stream',
-        tagging: req.rpc_params.tagging,
-        storage_class: req.rpc_params.storage_class,
-        target_data_info: req.rpc_params.target_data_info,
-        encryption
-    };
+    try {
+        const encryption = _get_encryption_for_object(req);
+        const obj_id = MDStore.instance().make_md_id();
+        const info = {
+            _id: obj_id,
+            system: req.system._id,
+            bucket: req.bucket._id,
+            key: req.rpc_params.key,
+            content_type: req.rpc_params.content_type ||
+                mime.lookup(req.rpc_params.key) ||
+                'application/octet-stream',
+            tagging: req.rpc_params.tagging,
+            storage_class: req.rpc_params.storage_class,
+            target_data_info: req.rpc_params.target_data_info,
+            encryption
+        };
 
-    if (req.rpc_params.complete_upload) {
-        if (!req.rpc_params.size || req.rpc_params.size < 0) {
-            throw new RpcError('INVALID_REQUEST', 'valid size must be provided when using complete_upload');
+        if (req.rpc_params.complete_upload) {
+            if (!req.rpc_params.size || req.rpc_params.size < 0) {
+                throw new RpcError('INVALID_REQUEST', 'valid size must be provided when using complete_upload');
+            }
+            if (!req.rpc_params.etag) {
+                throw new RpcError('INVALID_REQUEST', 'etag must be provided when using complete_upload');
+            }
+            if (!req.rpc_params.last_modified_time) {
+                throw new RpcError('INVALID_REQUEST', 'last_modified_time must be provided when using complete_upload');
+            }
+            info.etag = req.rpc_params.etag;
+            info.last_modified_time = new Date(req.rpc_params.last_modified_time);
+        } else {
+            info.upload_size = 0;
+            info.upload_started = obj_id;
         }
-        if (!req.rpc_params.etag) {
-            throw new RpcError('INVALID_REQUEST', 'etag must be provided when using complete_upload');
+
+        if (req.bucket.namespace && req.bucket.namespace.caching) {
+            info.cache_last_valid_time = new Date();
         }
-        if (!req.rpc_params.last_modified_time) {
-            throw new RpcError('INVALID_REQUEST', 'last_modified_time must be provided when using complete_upload');
+
+        const lock_settings = calc_retention(req);
+        if (lock_settings) info.lock_settings = lock_settings;
+
+        if (req.rpc_params.size >= 0) info.size = req.rpc_params.size;
+        if (req.rpc_params.md5_b64) info.md5_b64 = req.rpc_params.md5_b64;
+        if (req.rpc_params.sha256_b64) info.sha256_b64 = req.rpc_params.sha256_b64;
+
+        // Persist quota reservation so abort/complete can release the correct amounts.
+        if (quota_reservation) {
+            info.realtime_quota_reserved_size = quota_reservation.reserve_size;
+            info.realtime_quota_reserved_quantity = quota_reservation.reserve_quantity;
         }
-        info.etag = req.rpc_params.etag;
-        info.last_modified_time = new Date(req.rpc_params.last_modified_time);
-    } else {
-        info.upload_size = 0;
-        info.upload_started = obj_id;
+
+        if (req.rpc_params.xattr) {
+            // translating xattr names to valid mongo property names which do not allow dots
+            // we use `@` since it is not a valid char in HTTP header names
+            info.xattr = _.mapKeys(req.rpc_params.xattr, (v, k) => k.replace(/\./g, '@'));
+        }
+
+        if (req.rpc_params.content_encoding) {
+            info.content_encoding = req.rpc_params.content_encoding;
+        }
+
+        const tier = req.bucket.tiering && await map_server.select_tier_for_write(req.bucket);
+        if (tier && tier.storage_class && tier.storage_class !== STORAGE_CLASS_STANDARD) {
+            info.storage_class = tier.storage_class;
+        }
+
+        // for now we defer put mapping only for simple uploads and when versioning is disabled
+        // This should work the same for versioned buckets, but out of scope for now.
+        // TODO: revisit for versioned buckets
+        // enforce_quota: never defer — reservation must be bound to an MD row so abort can release it.
+        const defer_put_mapping = Boolean(
+            req.rpc_params.defer_put_mapping &&
+            !req.rpc_params.complete_upload &&
+            (!req.bucket.versioning || req.bucket.versioning === 'DISABLED') &&
+            !realtime_quota.is_enabled(req.bucket)
+        );
+
+        if (!defer_put_mapping) {
+            await MDStore.instance().insert_object(info);
+            object_md_cache.put_in_cache(String(info._id), info);
+        }
+
+        return {
+            obj_id: info._id,
+            bucket_id: req.bucket._id,
+            tier_id: tier?._id,
+            chunk_split_config: req.bucket.tiering ? req.bucket.tiering.chunk_split_config : {},
+            chunk_coder_config: req.bucket.tiering ? tier.chunk_config.chunk_coder_config : {},
+            encryption,
+            bucket_master_key_id: (req.bucket.master_key_id.disabled === false && req.bucket.master_key_id._id) || undefined,
+            deferred_object_md: defer_put_mapping ? info : undefined,
+        };
+    } catch (err) {
+        if (quota_reservation) {
+            await realtime_quota.release(
+                req.bucket,
+                quota_reservation.reserve_size,
+                quota_reservation.reserve_quantity
+            ).catch(release_err => dbg.error('failed to release realtime quota after create_object_upload error', release_err));
+        }
+        throw err;
     }
-
-    if (req.bucket.namespace && req.bucket.namespace.caching) {
-        info.cache_last_valid_time = new Date();
-    }
-
-    const lock_settings = calc_retention(req);
-    if (lock_settings) info.lock_settings = lock_settings;
-
-    if (req.rpc_params.size >= 0) info.size = req.rpc_params.size;
-    if (req.rpc_params.md5_b64) info.md5_b64 = req.rpc_params.md5_b64;
-    if (req.rpc_params.sha256_b64) info.sha256_b64 = req.rpc_params.sha256_b64;
-
-    if (req.rpc_params.xattr) {
-        // translating xattr names to valid mongo property names which do not allow dots
-        // we use `@` since it is not a valid char in HTTP header names
-        info.xattr = _.mapKeys(req.rpc_params.xattr, (v, k) => k.replace(/\./g, '@'));
-    }
-
-    if (req.rpc_params.content_encoding) {
-        info.content_encoding = req.rpc_params.content_encoding;
-    }
-
-    const tier = req.bucket.tiering && await map_server.select_tier_for_write(req.bucket);
-    if (tier && tier.storage_class && tier.storage_class !== STORAGE_CLASS_STANDARD) {
-        info.storage_class = tier.storage_class;
-    }
-
-    // for now we defer put mapping only for simple uploads and when versioning is disabled
-    // This should work the same for versioned buckets, but out of scope for now.
-    // TODO: revisit for versioned buckets
-    const defer_put_mapping = Boolean(
-        req.rpc_params.defer_put_mapping &&
-        !req.rpc_params.complete_upload &&
-        (!req.bucket.versioning || req.bucket.versioning === 'DISABLED')
-    );
-
-    if (!defer_put_mapping) {
-        await MDStore.instance().insert_object(info);
-        object_md_cache.put_in_cache(String(info._id), info);
-    }
-
-    return {
-        obj_id: info._id,
-        bucket_id: req.bucket._id,
-        tier_id: tier?._id,
-        chunk_split_config: req.bucket.tiering ? req.bucket.tiering.chunk_split_config : {},
-        chunk_coder_config: req.bucket.tiering ? tier.chunk_config.chunk_coder_config : {},
-        encryption,
-        bucket_master_key_id: (req.bucket.master_key_id.disabled === false && req.bucket.master_key_id._id) || undefined,
-        deferred_object_md: defer_put_mapping ? info : undefined,
-    };
 }
 
 function _get_encryption_for_object(req) {
@@ -426,6 +447,8 @@ async function _complete_multipart_upload(req) {
     const unset_updates = {
         upload_size: 1,
         upload_started: 1,
+        realtime_quota_reserved_size: 1,
+        realtime_quota_reserved_quantity: 1,
     };
     const obj = await find_cached_object_upload(req);
     if (req.rpc_params.size !== obj.size) {
@@ -508,7 +531,9 @@ async function _complete_multipart_upload(req) {
         set_updates.last_modified_time = new Date(req.rpc_params.last_modified_time);
     }
 
-    await _put_object_handle_latest_with_retries({ req, put_obj: obj, set_updates, unset_updates });
+    await realtime_quota.apply_on_complete(req, obj, set_updates.size || 0, () =>
+        _put_object_handle_latest_with_retries({ req, put_obj: obj, set_updates, unset_updates })
+    );
 
     const took_ms = set_updates.create_time.getTime() - obj._id.getTimestamp().getTime();
     const upload_duration = time_utils.format_time_duration(took_ms);
@@ -600,7 +625,12 @@ async function _complete_simple_upload(req) {
         set_updates.last_modified_time = new Date(req.rpc_params.last_modified_time);
     }
 
-    const unset_updates = { upload_size: 1, upload_started: 1 };
+    const unset_updates = {
+        upload_size: 1,
+        upload_started: 1,
+        realtime_quota_reserved_size: 1,
+        realtime_quota_reserved_quantity: 1,
+    };
 
     set_updates.version_seq = await MDStore.instance().alloc_object_version_seq();
     if (req.bucket.versioning === 'ENABLED') set_updates.version_enabled = true;
@@ -632,7 +662,9 @@ async function _complete_simple_upload(req) {
         for (const key of Object.keys(unset_updates)) delete obj[key];
     }
 
-    await _put_object_handle_latest_with_retries({ req, put_obj: obj, set_updates, unset_updates, deferred_mappings, });
+    await realtime_quota.apply_on_complete(req, obj, set_updates.size || 0, () =>
+        _put_object_handle_latest_with_retries({ req, put_obj: obj, set_updates, unset_updates, deferred_mappings, })
+    );
 
     // Deferred path: obj._id may be a hex string from RPC; normalize for upload-duration logging.
     const obj_id_ts = is_deferred ?
@@ -680,6 +712,14 @@ async function abort_object_upload(req) {
     //while continuing to ul resulting in a partial file
     const obj = await find_object_upload(req);
     await MDStore.instance().delete_object_by_id(obj._id);
+    console.log("abort_object_upload ====>>>", obj.realtime_quota_reserved_size, obj.realtime_quota_reserved_quantity  )
+
+    // Release any quota that was reserved for this upload.
+    await realtime_quota.release(
+        req.bucket,
+        obj.realtime_quota_reserved_size || 0,
+        obj.realtime_quota_reserved_quantity || 0
+    );
 }
 
 /**
@@ -705,29 +745,60 @@ async function create_multipart(req) {
     throw_if_maintenance(req);
     const obj = await find_object_upload(req);
     _check_encryption_permissions(obj.encryption, req.rpc_params.encryption);
-    const tier = await map_server.select_tier_for_write(req.bucket);
-    const multipart = {
-        _id: MDStore.instance().make_md_id(),
-        system: req.system._id,
-        bucket: req.bucket._id,
-        obj: obj._id,
-        num: req.rpc_params.num,
-        size: req.rpc_params.size,
-        md5_b64: req.rpc_params.md5_b64,
-        sha256_b64: req.rpc_params.sha256_b64,
-        uncommitted: true,
-    };
 
-    await MDStore.instance().insert_multipart(multipart);
-    return {
-        multipart_id: multipart._id,
-        bucket_id: req.bucket._id,
-        tier_id: tier._id,
-        chunk_split_config: req.bucket.tiering.chunk_split_config,
-        chunk_coder_config: tier.chunk_config.chunk_coder_config,
-        encryption: obj.encryption,
-        bucket_master_key_id: (req.bucket.master_key_id.disabled === false && req.bucket.master_key_id._id) || undefined
-    };
+    // Reserve the part size in the realtime quota counter (quantity=0: the object slot
+    // was already reserved at create_object_upload time).
+    const part_size = req.rpc_params.size;
+    const part_reservation = await realtime_quota.enforce(req.bucket, part_size, 0);
+    let reserved_on_obj = false;
+
+    try {
+        const tier = await map_server.select_tier_for_write(req.bucket);
+        const multipart = {
+            _id: MDStore.instance().make_md_id(),
+            system: req.system._id,
+            bucket: req.bucket._id,
+            obj: obj._id,
+            num: req.rpc_params.num,
+            size: part_size,
+            md5_b64: req.rpc_params.md5_b64,
+            sha256_b64: req.rpc_params.sha256_b64,
+            uncommitted: true,
+        };
+
+        // Track the cumulative size reserved for this upload so abort can release it.
+        // Use $inc to avoid a read-modify-write race when multiple parts are uploaded in parallel.
+        if (part_size >= 0 && realtime_quota.is_enabled(req.bucket)) {
+            await MDStore.instance().update_object_by_id(obj._id, undefined, undefined,
+                { realtime_quota_reserved_size: part_size });
+            reserved_on_obj = true;
+        }
+
+        await MDStore.instance().insert_multipart(multipart);
+        return {
+            multipart_id: multipart._id,
+            bucket_id: req.bucket._id,
+            tier_id: tier._id,
+            chunk_split_config: req.bucket.tiering.chunk_split_config,
+            chunk_coder_config: tier.chunk_config.chunk_coder_config,
+            encryption: obj.encryption,
+            bucket_master_key_id: (req.bucket.master_key_id.disabled === false && req.bucket.master_key_id._id) || undefined
+        };
+    } catch (err) {
+        if (part_reservation) {
+            await realtime_quota.release(
+                req.bucket,
+                part_reservation.reserve_size,
+                part_reservation.reserve_quantity
+            ).catch(release_err => dbg.error('failed to release realtime quota after create_multipart error', release_err));
+        }
+        if (reserved_on_obj && part_size >= 0) {
+            await MDStore.instance().update_object_by_id(obj._id, undefined, undefined,
+                { realtime_quota_reserved_size: -part_size }
+            ).catch(inc_err => dbg.error('failed to roll back object reserved_size after create_multipart error', inc_err));
+        }
+        throw err;
+    }
 }
 
 
@@ -1344,15 +1415,30 @@ async function delete_object(req) {
     throw_if_maintenance(req);
     load_bucket(req, { include_deleting: true });
 
-    const { reply, obj } = req.rpc_params.version_id ?
-        await _delete_object_version(req) :
-        await _delete_object_only_key(req);
+    const reserved_delete_marker = await realtime_quota.reserve_delete_marker_if_needed(req);
+    try {
+        const { reply, obj } = req.rpc_params.version_id ?
+            await _delete_object_version(req) :
+            await _delete_object_only_key(req);
 
-    if (obj) {
-        dbg.log1(`${obj.key} was deleted by ${req.account && req.account.email.unwrap()}`);
+        // Only credit quota when the object MD was actually removed. Key-delete on an
+        // ENABLED bucket returns `obj` but only inserts a delete marker — the version
+        // still occupies storage.
+        if (obj && reply.deleted_version_id) {
+            dbg.log1(`${obj.key} was deleted by ${req.account && req.account.email.unwrap()}`);
+            await realtime_quota.release_for_deleted(req.bucket, obj);
+        } else if (obj) {
+            dbg.log1(`${obj.key} delete-marker created by ${req.account && req.account.email.unwrap()}`);
+        }
+        reply.seq = await MDStore.instance().alloc_object_version_seq();
+        return reply;
+    } catch (err) {
+        if (reserved_delete_marker) {
+            await realtime_quota.release(req.bucket, 0, 1)
+                .catch(release_err => dbg.error('failed to release delete-marker quota after delete_object error', release_err));
+        }
+        throw err;
     }
-    reply.seq = await MDStore.instance().alloc_object_version_seq();
-    return reply;
 }
 
 /**
@@ -1408,6 +1494,10 @@ async function delete_multiple_objects(req) {
                     const batch_objs = await MDStore.instance().delete_objects_by_keys({ bucket_id: String(req.bucket._id), keys: batch });
                     objs.push(...batch_objs);
                 }
+                // Release realtime quota for all committed objects deleted in this batch.
+                // Rows from delete_objects_by_keys have shape { data: obj_md }.
+                await realtime_quota.release_for_deleted(req.bucket,
+                    objs.map(row => row.data).filter(Boolean));
                 await update_bulk_delete_results(objs, object_index_map, results, valid_objects_count);
             }
 
@@ -1503,6 +1593,9 @@ async function delete_multiple_objects_by_filter(req) {
     if (req.bucket.versioning === 'DISABLED' && reply_objects !== true) {
         query.return_results = true; // we want to return the objects that were deleted
         objects = await MDStore.instance().delete_objects_by_query(query);
+        // objects from delete_objects_by_query are raw rows with shape { data: obj_md }
+        await realtime_quota.release_for_deleted(req.bucket,
+            objects.map(row => (row.data || row)).filter(Boolean));
     } else {
         // TODO: change it to perform changes in batch. Won't scale
         objects = await MDStore.instance().find_objects(query);
@@ -1569,6 +1662,7 @@ async function delete_multiple_objects_unordered(req) {
 
     // delete the objects
     await MDStore.instance().remove_objects_and_unset_latest(objects);
+    await realtime_quota.release_for_deleted(req.bucket, objects);
 
     const bucket_has_objects = await MDStore.instance().has_any_objects_for_bucket(bucket_id);
     return { is_empty: !bucket_has_objects };
@@ -1578,7 +1672,7 @@ async function delete_multiple_objects_unordered(req) {
 async function delete_incomplete_multiparts(req) {
     load_bucket(req);
     dbg.log1(`[delete_incomplete_multiparts] LIFECYCLE from ${req.bucket.name} with days_after_initiation: ${req.rpc_params.days_after_initiation}`);
-    const delete_count = await MDStore.instance().remove_pending_multiparts({
+    const { deleted_count, objects: pending_objs } = await MDStore.instance().remove_pending_multiparts({
         bucket_id: req.bucket._id,
         days_after_initiation: req.rpc_params.days_after_initiation,
         prefix: req.rpc_params.prefix,
@@ -1586,16 +1680,18 @@ async function delete_incomplete_multiparts(req) {
         size_less: req.rpc_params.size_less,
         size_greater: req.rpc_params.size_greater,
     });
-    dbg.log1(`[delete_incomplete_multiparts] LIFECYCLE multipart deleted ${delete_count}`);
+    dbg.log1(`[delete_incomplete_multiparts] LIFECYCLE multipart deleted ${deleted_count}`);
+    await realtime_quota.release_for_aborted_uploads(req.bucket,
+        (pending_objs || []).map(row => row.data || row).filter(Boolean));
 
-    const reply = { num_objects_deleted: delete_count };
+    const reply = { num_objects_deleted: deleted_count };
     return reply;
 }
 
 async function delete_noncurrent_versions(req) {
     load_bucket(req);
     dbg.log1(`[delete_noncurrent_versions] LIFECYCLE from ${req.bucket.name} with params: ${req.rpc_params}`);
-    const delete_count = await MDStore.instance().remove_noncurrent_versions({
+    const { deleted_count, objects: expired_objs } = await MDStore.instance().remove_noncurrent_versions({
         bucket_id: req.bucket._id,
         noncurrent_days: req.rpc_params.noncurrent_days,
         newer_noncurrent_versions: req.rpc_params.newer_noncurrent_versions,
@@ -1605,25 +1701,29 @@ async function delete_noncurrent_versions(req) {
         size_greater: req.rpc_params.size_greater,
         tags: req.rpc_params.tags
     });
-    dbg.log1(`[delete_noncurrent_versions] LIFECYCLE deleted ${delete_count}`);
+    dbg.log1(`[delete_noncurrent_versions] LIFECYCLE deleted ${deleted_count}`);
+    await realtime_quota.release_for_deleted(req.bucket,
+        (expired_objs || []).map(row => row.data || row).filter(Boolean));
 
-    const reply = { num_objects_deleted: delete_count };
+    const reply = { num_objects_deleted: deleted_count };
     return reply;
 }
 
 async function delete_expired_delete_markers(req) {
     load_bucket(req);
     dbg.log1(`[delete_expired_delete_markers] LIFECYCLE from ${req.bucket.name} with params: ${req.rpc_params}`);
-    const delete_count = await MDStore.instance().delete_orphaned_delete_marker({
+    const { deleted_count, objects: expired_markers } = await MDStore.instance().delete_orphaned_delete_marker({
         bucket_id: req.bucket._id,
         prefix: req.rpc_params.prefix,
         limit: req.rpc_params.limit,
         size_less: req.rpc_params.size_less,
         size_greater: req.rpc_params.size_greater,
     });
-    dbg.log1(`[delete_expired_delete_markers] LIFECYCLE deleted ${delete_count}`);
+    dbg.log1(`[delete_expired_delete_markers] LIFECYCLE deleted ${deleted_count}`);
+    await realtime_quota.release_for_deleted(req.bucket,
+        (expired_markers || []).map(row => row.data || row).filter(Boolean));
 
-    const reply = { num_objects_deleted: delete_count };
+    const reply = { num_objects_deleted: deleted_count };
     return reply;
 }
 
@@ -2242,6 +2342,8 @@ function throw_if_maintenance(req) {
 
 function check_quota(bucket) {
     if (!bucket.quota) return;
+    // Realtime mode is the source of truth — do not deny uploads based on lagging storage_stats.
+    //if (realtime_quota.is_enabled(bucket)) return;
 
     const quota = new Quota(bucket.quota);
     const alerts = [];

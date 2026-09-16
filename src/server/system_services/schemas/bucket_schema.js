@@ -150,6 +150,16 @@ module.exports = {
         quota: {
             $ref: 'common_api#/definitions/quota_config'
         },
+        // Realtime quota counters - atomically incremented/decremented on upload
+        // reservation. Only meaningful when quota.enforce_quota is true.
+        // These fields are DB-authoritative (hot $inc). Do not $set them from
+        // system_store in-memory copies or they will clobber concurrent reservations.
+        quota_size_used: {
+            type: 'integer'
+        },
+        quota_quantity_used: {
+            type: 'integer'
+        },
         versioning: {
             type: 'string',
             enum: ['DISABLED', 'SUSPENDED', 'ENABLED']

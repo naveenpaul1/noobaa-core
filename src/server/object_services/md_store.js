@@ -430,11 +430,15 @@ class MDStore {
                     `data ? 'upload_started'`,
                     `(EXTRACT(EPOCH FROM NOW()) - ${convert_mongoid_to_timestamp_sql("data->>'upload_started'")}) / 86400 > ${days_after_initiation}`,
                     sql_condition0, sql_condition1, sql_condition2, sql_condition3,
-                )};`;
+                )}
+            RETURNING *;`;
 
         dbg.log1('[remove_pending_multiparts] generated query:', query);
         const result = await db_client.instance().executeSQL(query, [new Date()], { preferred_pool: this._postgres_pool });
-        return result.rowCount;
+        return {
+            deleted_count: result.rowCount,
+            objects: result.rows || [],
+        };
     }
 
     /**
@@ -523,11 +527,15 @@ class MDStore {
                         sql_condition_unlocked,
                     )}
                 ${sql_limit}
-            );`;
+            )
+            RETURNING *;`;
 
         dbg.log1('[remove_noncurrent_versions] generated query:', query);
         const result = await db_client.instance().executeSQL(query, [new Date()], { preferred_pool: this._postgres_pool });
-        return result.rowCount;
+        return {
+            deleted_count: result.rowCount,
+            objects: result.rows || [],
+        };
     }
 
     /**
@@ -584,11 +592,15 @@ class MDStore {
                 sql_condition0, sql_condition1, sql_condition2, sql_condition3
             )}
             ${sql_limit}
-        );`;
+        )
+        RETURNING *;`;
 
         dbg.log1('[delete_orphaned_delete_marker] generated query:', query);
         const result = await db_client.instance().executeSQL(query, [], { preferred_pool: this._postgres_pool });
-        return result.rowCount;
+        return {
+            deleted_count: result.rowCount,
+            objects: result.rows || [],
+        };
     }
 
     // 2, 3, 4
