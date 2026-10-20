@@ -170,8 +170,6 @@ class BucketQuotaStore {
      *   object_id: nb.ID|string,
      *   delta_bytes?: number,
      *   delta_objects?: number,
-     *   limit_bytes?: number,
-     *   limit_objects?: number,
      * }} params
      * @returns {Promise<boolean>}
      */
@@ -180,8 +178,6 @@ class BucketQuotaStore {
         object_id,
         delta_bytes = 0,
         delta_objects = 0,
-        limit_bytes,
-        limit_objects
     }) {
             if (!delta_bytes && !delta_objects) return true;
 
@@ -191,14 +187,15 @@ class BucketQuotaStore {
                 String(delta_bytes),
                 String(delta_objects),
             ];
-            const res = await db_client.instance().executeSQL(RESERVE_SQL, params, {
+            const sql = this._build_update_sql('reserve', delta_bytes, delta_objects);
+            const res = await db_client.instance().executeSQL(sql, params, {
                 preferred_pool: 'md',
                 query_name: 'bucket_quota_try_reserve',
             });
         if (!res.rowCount) {
             dbg.log1('BucketQuotaStore.try_reserve_bucket_quota: rejected', params);
             return false;
-        }
+        } 
         return true;
     }
 
@@ -220,7 +217,8 @@ class BucketQuotaStore {
             String(-Math.abs(delta_bytes)),
             String(-Math.abs(delta_objects)),
         ];
-        await db_client.instance().executeSQL(RELEASE_SQL, params, {
+        const sql = this._build_update_sql('release', delta_bytes, delta_objects);
+        await db_client.instance().executeSQL(sql, params, {
             preferred_pool: 'md',
             query_name: 'bucket_quota_release',
         });
@@ -234,6 +232,65 @@ class BucketQuotaStore {
         const id_str = String(object_id).replace(/-/g, '');
         const num = parseInt(id_str.slice(-8), 16);
         return num % 10;
+    }
+
+    /**
+     * Builds a parameterised UPDATE SQL for either 'reserve' or 'release' operations,
+     * only touching the fields that are actually provided.
+     *
+     * $1 = owner_id, $2 = shard.  Remaining positional params are assigned in order:
+     *   - bytes only   → $3 = delta_bytes
+     *   - objects only → $3 = delta_objects
+     *   - both         → $3 = delta_bytes, $4 = delta_objects
+     *
+     * Difference between types:
+     *   reserve – plain arithmetic (used + delta), allows negative sums
+     *   release – clamps at zero via GREATEST(0, used + delta)
+     *
+     * Returns an empty string when neither field is provided (caller should skip).
+     *
+     * @param {'reserve'|'release'} type
+     * @param {number|undefined} used_bytes
+     * @param {number|undefined} used_objects
+     * @returns {string}
+     */
+    _build_update_sql(type, used_bytes, used_objects) {
+        const has_bytes = used_bytes !== undefined && used_bytes !== null;
+        const has_objects = used_objects !== undefined && used_objects !== null;
+
+        if (!has_bytes && !has_objects) return '';
+
+        // const clamp = type === 'release';
+        const clamp = false;
+        /**
+         * Optionally clamps an arithmetic SQL expression at zero.
+         * @param {string} expr
+         * @returns {string}
+         */
+        const wrap = expr => clamp ? `GREATEST(0::bigint, ${expr})` : expr;
+
+        const bytes_expr = `jsonb_set(data, '{used_bytes}', to_jsonb(${wrap("(data->>'used_bytes')::bigint + $3::bigint")}))`;
+        const objects_param = has_bytes ? '$4' : '$3';
+        const objects_expr = `jsonb_set(data, '{used_objects}', to_jsonb(${wrap(`(data->>'used_objects')::bigint + ${objects_param}::bigint`)}))`;
+
+        let set_expr;
+        if (has_bytes && has_objects) {
+            set_expr = `jsonb_set(
+                ${bytes_expr},
+                '{used_objects}', to_jsonb(${wrap("(data->>'used_objects')::bigint + $4::bigint")})
+            )`;
+        } else if (has_bytes) {
+            set_expr = bytes_expr;
+        } else {
+            set_expr = objects_expr;
+        }
+
+        return `
+            UPDATE bucketquotas
+            SET data = ${set_expr}
+            WHERE (data->>'owner_id')::text = $1::text
+            AND (data->>'shard')::integer = $2::integer
+            RETURNING data`.trim();
     }
 }
 
