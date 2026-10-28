@@ -3,8 +3,9 @@
 
 const dbg = require('../../util/debug_module')(__filename);
 const db_client = require('../../util/db_client');
-const bucket_quota_schema = require('./schemas/bucket_quota_schema');
+const { MDStore } = require('./md_store');
 const mongo_utils = require('../../util/mongo_utils');
+const { escapeLiteral } = require('pg');
 
 // Postgres bigint max. Used as "unlimited" so a single WHERE clause covers both
 // size-only and quantity-only quotas without branching in SQL.
@@ -62,21 +63,13 @@ class BucketQuotaStore {
         return BucketQuotaStore._instance;
     }
 
-    constructor() {
-        this._bucket_quota = db_client.instance().define_collection({
-            name: 'bucketquotas',
-            schema: bucket_quota_schema,
-            postgres_pool: 'md',
-        });
-    }
-
     /**
      * Create or reset the usage row to zero. Called when enabling strict quota on
      * an empty bucket, so the hot path is UPDATE-only (no upsert advisory lock).
      * @param {nb.ID|string} bucket_id
      */
     async reset_usage(bucket_id) {
-        const existing = await this._bucket_quota.findOne({ owner_id: bucket_id });
+        const existing = await MDStore.instance().find_bucket_quota_row(bucket_id);
         if (existing) {
             return;
         }
@@ -87,12 +80,10 @@ class BucketQuotaStore {
         }
 
         try {
-            await this._bucket_quota.insertManyUnordered(quota_docs);
+            await MDStore.instance().insert_bucket_quota_rows(quota_docs);
         } catch (err) {
             if (db_client.instance().is_err_duplicate_key(err)) {
-                await this._bucket_quota.updateOne({ _id: bucket_id }, {
-                    $set: { used_bytes: 0, used_objects: 0 }
-                });
+                await MDStore.instance().reset_bucket_quota_row(bucket_id);
                 return;
             }
             dbg.error('BucketQuotaStore.reset_usage: insert failed', bucket_id, err);
@@ -104,7 +95,7 @@ class BucketQuotaStore {
      * @param {nb.ID|string} bucket_id
      */
     async delete_usage(bucket_id) {
-        await this._bucket_quota.deleteMany({ owner_id: bucket_id });
+        await MDStore.instance().delete_bucket_quota_rows(bucket_id);
     }
 
     /**
@@ -171,7 +162,7 @@ class BucketQuotaStore {
      *   delta_bytes?: number,
      *   delta_objects?: number,
      * }} params
-     * @returns {Promise<boolean>}
+     * @returns {Promise<string>}
      */
     async try_reserve_bucket_quota({
         bucket_id,
@@ -179,24 +170,27 @@ class BucketQuotaStore {
         delta_bytes = 0,
         delta_objects = 0,
     }) {
-            if (!delta_bytes && !delta_objects) return true;
+        console.log("try_reserve_bucket_quota ===>", )
+        if (!delta_bytes && !delta_objects) return '';
 
-            const params = [
-                String(bucket_id),
-                this._hash(object_id),
-                String(delta_bytes),
-                String(delta_objects),
-            ];
-            const sql = this._build_update_sql('reserve', delta_bytes, delta_objects);
-            const res = await db_client.instance().executeSQL(sql, params, {
-                preferred_pool: 'md',
-                query_name: 'bucket_quota_try_reserve',
-            });
+        const params = [
+            String(bucket_id),
+            this._hash(object_id),
+            String(delta_bytes),
+            String(delta_objects),
+        ];
+        const sql = this._build_update_sql('reserve', ...params);
+        //console.log("try_reserve_bucket_quota =====>>", sql)
+        return sql;
+        /*const res = await db_client.instance().executeSQL(sql, params, {
+            preferred_pool: 'md',
+            query_name: 'bucket_quota_try_reserve',
+        });
         if (!res.rowCount) {
             dbg.log1('BucketQuotaStore.try_reserve_bucket_quota: rejected', params);
             return false;
         } 
-        return true;
+        return true;*/
     }
 
     /**
@@ -207,9 +201,10 @@ class BucketQuotaStore {
      *   object_id: string,
      *   delta_bytes?: number,
      *   delta_objects?: number,
+     *   execute_query?: boolean,
      * }} params
      */
-    async release_bucket_quota({ bucket_id, object_id, delta_bytes = 0, delta_objects = 0 }) {
+    async release_bucket_quota({ bucket_id, object_id, delta_bytes = 0, delta_objects = 0, execute_query = false }) {
         if (!delta_bytes && !delta_objects) return;
         const params = [
             String(bucket_id),
@@ -217,11 +212,20 @@ class BucketQuotaStore {
             String(-Math.abs(delta_bytes)),
             String(-Math.abs(delta_objects)),
         ];
-        const sql = this._build_update_sql('release', delta_bytes, delta_objects);
-        await db_client.instance().executeSQL(sql, params, {
+        const sql = this._build_update_sql('release', ...params);
+        console.log("release_bucket_quota ===>>", execute_query)
+        if (execute_query) {
+            await db_client.instance().executeSQL(sql, [], {
+                preferred_pool: 'md',
+                query_name: 'bucket_quota_release',
+            });
+            return '';
+        }
+        return sql;
+        /*await db_client.instance().executeSQL(sql, params, {
             preferred_pool: 'md',
             query_name: 'bucket_quota_release',
-        });
+        });*/
     }
     /**
      * Maps a bucket_id to a shard index in [0, 9].
@@ -235,13 +239,11 @@ class BucketQuotaStore {
     }
 
     /**
-     * Builds a parameterised UPDATE SQL for either 'reserve' or 'release' operations,
+     * Builds an UPDATE SQL for either 'reserve' or 'release' operations,
      * only touching the fields that are actually provided.
      *
-     * $1 = owner_id, $2 = shard.  Remaining positional params are assigned in order:
-     *   - bytes only   → $3 = delta_bytes
-     *   - objects only → $3 = delta_objects
-     *   - both         → $3 = delta_bytes, $4 = delta_objects
+     * The SQL is executed through a bulk op that does not pass bind parameters,
+     * so all values (owner_id, shard, deltas) are inlined as escaped literals.
      *
      * Difference between types:
      *   reserve – plain arithmetic (used + delta), allows negative sums
@@ -250,15 +252,22 @@ class BucketQuotaStore {
      * Returns an empty string when neither field is provided (caller should skip).
      *
      * @param {'reserve'|'release'} type
-     * @param {number|undefined} used_bytes
-     * @param {number|undefined} used_objects
+     * @param {string|number} owner_id
+     * @param {string|number} shard
+     * @param {number|string|undefined} used_bytes
+     * @param {number|string|undefined} used_objects
      * @returns {string}
      */
-    _build_update_sql(type, used_bytes, used_objects) {
+    _build_update_sql(type, owner_id, shard, used_bytes, used_objects) {
         const has_bytes = used_bytes !== undefined && used_bytes !== null;
         const has_objects = used_objects !== undefined && used_objects !== null;
 
         if (!has_bytes && !has_objects) return '';
+
+        const owner_lit = escapeLiteral(String(owner_id));
+        const shard_lit = Number.parseInt(String(shard), 10);
+        const bytes_lit = has_bytes ? BigInt(used_bytes).toString() : '0';
+        const objects_lit = has_objects ? BigInt(used_objects).toString() : '0';
 
         // const clamp = type === 'release';
         const clamp = false;
@@ -269,15 +278,14 @@ class BucketQuotaStore {
          */
         const wrap = expr => clamp ? `GREATEST(0::bigint, ${expr})` : expr;
 
-        const bytes_expr = `jsonb_set(data, '{used_bytes}', to_jsonb(${wrap("(data->>'used_bytes')::bigint + $3::bigint")}))`;
-        const objects_param = has_bytes ? '$4' : '$3';
-        const objects_expr = `jsonb_set(data, '{used_objects}', to_jsonb(${wrap(`(data->>'used_objects')::bigint + ${objects_param}::bigint`)}))`;
+        const bytes_expr = `jsonb_set(data, '{used_bytes}', to_jsonb(${wrap(`(data->>'used_bytes')::bigint + ${bytes_lit}::bigint`)}))`;
+        const objects_expr = `jsonb_set(data, '{used_objects}', to_jsonb(${wrap(`(data->>'used_objects')::bigint + ${objects_lit}::bigint`)}))`;
 
         let set_expr;
         if (has_bytes && has_objects) {
             set_expr = `jsonb_set(
                 ${bytes_expr},
-                '{used_objects}', to_jsonb(${wrap("(data->>'used_objects')::bigint + $4::bigint")})
+                '{used_objects}', to_jsonb(${wrap(`(data->>'used_objects')::bigint + ${objects_lit}::bigint`)})
             )`;
         } else if (has_bytes) {
             set_expr = bytes_expr;
@@ -288,8 +296,8 @@ class BucketQuotaStore {
         return `
             UPDATE bucketquotas
             SET data = ${set_expr}
-            WHERE (data->>'owner_id')::text = $1::text
-            AND (data->>'shard')::integer = $2::integer
+            WHERE (data->>'owner_id')::text = ${owner_lit}::text
+            AND (data->>'shard')::integer = ${shard_lit}::integer
             RETURNING data`.trim();
     }
 }

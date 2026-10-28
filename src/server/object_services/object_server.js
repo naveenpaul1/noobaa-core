@@ -521,14 +521,9 @@ async function _complete_multipart_upload(req) {
     // Same reservation as simple PUT: full object size + 1, or a size delta on overwrite.
     // Part bytes are already reserved; completion reserves the object slot.
     // Versioning ENABLED adds that slot on top of every existing version.
-    const reservation = await reserve_object_upload({ bucket: req.bucket, obj_id: obj._id,
+    const quota_sql = await reserve_object_upload({ bucket: req.bucket, obj_id: obj._id,
         obj_key: obj.key, size: set_updates.size, objects: 1, is_multipart_complete: true });
-    try {
-        await _put_object_handle_latest_with_retries({ req, put_obj: obj, set_updates, unset_updates });
-    } catch (err) {
-        await _rollback_reserved_upload(req.bucket, obj, reservation);
-        throw err;
-    }
+    await _put_object_handle_latest_with_retries({ req, put_obj: obj, set_updates, unset_updates, quota_sql });
 
     const took_ms = set_updates.create_time.getTime() - obj._id.getTimestamp().getTime();
     const upload_duration = time_utils.format_time_duration(took_ms);
@@ -652,14 +647,10 @@ async function _complete_simple_upload(req) {
         for (const key of Object.keys(unset_updates)) delete obj[key];
     }
 
-    const reservation = await reserve_object_upload({
+    const quota_sql = await reserve_object_upload({
         bucket: req.bucket, obj_id: obj._id, obj_key: obj.key, size: set_updates.size, objects: 1});
-    try {
-        await _put_object_handle_latest_with_retries({ req, put_obj: obj, set_updates, unset_updates, deferred_mappings});
-    } catch (err) {
-        await _rollback_reserved_upload(req.bucket, obj, reservation);
-        throw err;
-    }
+    await _put_object_handle_latest_with_retries({ req, put_obj: obj, set_updates, unset_updates, deferred_mappings, quota_sql});
+
 
     // Deferred path: obj._id may be a hex string from RPC; normalize for upload-duration logging.
     const obj_id_ts = is_deferred ?
@@ -840,17 +831,9 @@ async function complete_multipart(req) {
     // Copy and chunked parts learn their size here, after create_multipart.
     // Reserve that size before the part is committed. Object completion only adds the slot.
     const part_size = multipart.size >= 0 ? multipart.size : set_updates.size;
-    if (part_size >= 0) {
-        await reserve_object_upload({ bucket: req.bucket, obj_id: obj._id, size: part_size });
-    }
-    try {
-        await MDStore.instance().update_multipart_by_id(multipart_id, set_updates);
-    } catch (err) {
-        if (part_size > 0) {
-            await strict_quota.release_bucket_quota(req.bucket, obj._id, { bytes: part_size, objects: 0 });
-        }
-        throw err;
-    }
+    const sql_quota = await reserve_object_upload({ bucket: req.bucket, obj_id: obj._id, size: part_size });
+
+    await MDStore.instance().update_multipart_by_id(multipart_id, set_updates, sql_quota);
 
     return {
         etag: get_etag(multipart, set_updates),
@@ -1438,7 +1421,7 @@ async function delete_object(req) {
         await _release_completed_part_bytes(req.bucket, obj._id, multiparts);
     }
     if (quota_deleted_obj) {
-        await strict_quota.release_completed_object(req.bucket, quota_deleted_obj);
+        //await strict_quota.release_completed_object(req.bucket, quota_deleted_obj);
     }
     reply.seq = await MDStore.instance().alloc_object_version_seq();
     return reply;
@@ -1495,6 +1478,11 @@ async function delete_multiple_objects(req) {
 
                 for (const batch of batches) {
                     const batch_objs = await MDStore.instance().delete_objects_by_keys({ bucket_id: String(req.bucket._id), keys: batch });
+                    // delete_objects_by_keys should return the deleted object,
+                    //  because of that, Can not bulk delete and update usgae in a single bulk transaction
+                    if (strict_quota.is_strict_quota_bucket(req.bucket)) {
+                        await MDStore.instance().release_quota_usage_delete_objects_by_keys(req.bucket._id, batch_objs)
+                    }
                     objs.push(...batch_objs);
                 }
                 await update_bulk_delete_results(objs, object_index_map, results, valid_objects_count, req.bucket);
@@ -2414,11 +2402,11 @@ function _get_delete_obj_reply(deleted_obj, created_obj) {
 }
 
 
-async function _put_object_handle_latest_with_retries({ req, put_obj, set_updates, unset_updates, deferred_mappings = undefined }) {
+async function _put_object_handle_latest_with_retries({ req, put_obj, set_updates, unset_updates, deferred_mappings = undefined, quota_sql = '' }) {
     const put_obj_attempts = 3;
     await P.retry({
         func: async () => {
-            await _put_object_handle_latest({ req, put_obj, set_updates, unset_updates, deferred_mappings });
+            await _put_object_handle_latest({ req, put_obj, set_updates, unset_updates, deferred_mappings, quota_sql });
         },
         attempts: put_obj_attempts,
         delay_ms: 50,
@@ -2428,7 +2416,8 @@ async function _put_object_handle_latest_with_retries({ req, put_obj, set_update
     });
 }
 
-async function _put_object_handle_latest({ req, put_obj, set_updates, unset_updates, deferred_mappings }) {
+async function _put_object_handle_latest({ req, put_obj, set_updates, unset_updates, deferred_mappings, quota_sql }) {
+    console.log("_put_object_handle_latest =====>@@@@@", quota_sql);
     const bucket_versioning = req.bucket.versioning;
 
     if (bucket_versioning === 'DISABLED') {
@@ -2441,6 +2430,7 @@ async function _put_object_handle_latest({ req, put_obj, set_updates, unset_upda
                         delete_obj_id: obj._id,
                         object_md: put_obj,
                         ...deferred_mappings,
+                        quota_sql
                     });
                 } else {
                     await MDStore.instance().complete_object_upload_latest_mark_remove_current_and_delete({
@@ -2448,15 +2438,17 @@ async function _put_object_handle_latest({ req, put_obj, set_updates, unset_upda
                         put_obj: put_obj,
                         set_updates,
                         unset_updates,
+                        quota_sql
                     });
                 }
             } else if (deferred_mappings) {
                 await MDStore.instance().insert_mappings_in_transaction({
                     object_md: put_obj,
                     ...deferred_mappings,
+                    quota_sql
                 });
             } else {
-                await MDStore.instance().update_object_by_id(put_obj._id, set_updates, unset_updates);
+                await MDStore.instance().update_object_by_id(put_obj._id, set_updates, unset_updates, quota_sql);
             }
         } else if (deferred_mappings) {
             // No md_conditions: soft-delete by key + insert new object + mappings in one batch
@@ -2465,6 +2457,7 @@ async function _put_object_handle_latest({ req, put_obj, set_updates, unset_upda
                 key: put_obj.key,
                 object_md: put_obj,
                 ...deferred_mappings,
+                quota_sql
             });
         } else {
             // No md_conditions: soft-delete by key + update put_obj in one batch
@@ -2474,6 +2467,7 @@ async function _put_object_handle_latest({ req, put_obj, set_updates, unset_upda
                 put_obj,
                 set_updates,
                 unset_updates,
+                quota_sql
             });
         }
         return;
@@ -2632,36 +2626,35 @@ async function _delete_object_only_key(req) {
 
     if (bucket_versioning === 'DISABLED') {
         const obj = await MDStore.instance().find_object_latest(req.bucket._id, req.rpc_params.key);
+        
         http_utils.check_md_conditions(req.rpc_params.md_conditions, obj);
         if (!obj) return { reply: {} };
         if (obj.delete_marker) dbg.error('versioning disabled bucket null objects should not have delete_markers', obj);
         // 2, 3, 8
-
-        await MDStore.instance().remove_object_and_unset_latest(obj);
+    
+        const quota_sql = await strict_quota.release_completed_object(req.bucket, obj);
+        await MDStore.instance().remove_object_and_unset_latest(obj, quota_sql);
         return { obj, quota_deleted_obj: obj, reply: _get_delete_obj_reply(obj) };
     }
 
     if (bucket_versioning === 'ENABLED') {
         const obj = await MDStore.instance().find_object_latest(req.bucket._id, req.rpc_params.key);
+        //const quota_sql = await strict_quota.release_completed_object(req.bucket, obj);
         http_utils.check_md_conditions(req.rpc_params.md_conditions, obj);
         if (obj) {
-            // 3, 5 — previous version stays. The delete marker is an extra object.
-            const delete_marker = await _create_delete_marker(req.bucket, {
-                replaces: false,
-                insert: marker_id => MDStore.instance().insert_object_delete_marker_move_latest(
-                    obj, /* version_enabled: */ true, marker_id),
-            });
+            // 3, 5
+            const quota_sql = await _return_reserve_bucket_quota_query(req.bucket, true);
+            const delete_marker = await MDStore.instance().insert_object_delete_marker_move_latest(
+                obj, /* version_enabled: */ true, quota_sql);
             return { obj, reply: _get_delete_obj_reply(null, delete_marker) };
         } else {
             // 5
-            const delete_marker = await _create_delete_marker(req.bucket, {
-                replaces: false,
-                insert: marker_id => MDStore.instance().insert_object_delete_marker({
-                    bucket: req.bucket._id,
-                    system: req.system._id,
-                    key: req.rpc_params.key,
-                    version_enabled: true
-                }, marker_id),
+            const quota_sql = await _return_reserve_bucket_quota_query(req.bucket, true);
+            const delete_marker = await MDStore.instance().insert_object_delete_marker({
+                bucket: req.bucket._id,
+                system: req.system._id,
+                key: req.rpc_params.key,
+                version_enabled: true
             });
             return { reply: _get_delete_obj_reply(null, delete_marker) };
         }
@@ -2673,13 +2666,10 @@ async function _delete_object_only_key(req) {
             if (obj.version_past) {
                 const latest_obj = await MDStore.instance().find_object_latest(req.bucket._id, req.rpc_params.key);
                 if (latest_obj) {
-                    // 3, 5 — null version is removed and replaced by the delete marker.
+                    // 3, 5
                     http_utils.check_md_conditions(req.rpc_params.md_conditions, latest_obj);
-                    const delete_marker = await _create_delete_marker(req.bucket, {
-                        replaces: true,
-                        insert: marker_id => MDStore.instance().insert_object_delete_marker_move_latest_with_delete(
-                            obj, latest_obj, marker_id),
-                    });
+                    const quota_sql = _return_reserve_bucket_quota_query(req.bucket, false);
+                    const delete_marker = await MDStore.instance().insert_object_delete_marker_move_latest_with_delete(obj, latest_obj, quota_sql);
                     return { obj, quota_deleted_obj: obj, reply: _get_delete_obj_reply(obj, delete_marker) };
                 } else {
                     // TODO: Should not happen since it means that we do not have latest
@@ -2688,34 +2678,26 @@ async function _delete_object_only_key(req) {
             } else {
                 // 2, 3, 5
                 http_utils.check_md_conditions(req.rpc_params.md_conditions, obj);
-                const delete_marker = await _create_delete_marker(req.bucket, {
-                    replaces: true,
-                    insert: marker_id => MDStore.instance().insert_object_delete_marker_move_latest_with_delete(
-                        obj, undefined, marker_id),
-                });
+                const quota_sql = _return_reserve_bucket_quota_query(req.bucket, false);
+                const delete_marker = await MDStore.instance().insert_object_delete_marker_move_latest_with_delete(obj, quota_sql);
                 return { obj, quota_deleted_obj: obj, reply: _get_delete_obj_reply(obj, delete_marker) };
             }
         } else {
             const latest_obj = await MDStore.instance().find_object_latest(req.bucket._id, req.rpc_params.key);
             http_utils.check_md_conditions(req.rpc_params.md_conditions, latest_obj);
             if (latest_obj) {
-                // 3, 5 — versioned object stays. The delete marker is an extra object.
-                const delete_marker = await _create_delete_marker(req.bucket, {
-                    replaces: false,
-                    insert: marker_id => MDStore.instance().insert_object_delete_marker_move_latest(
-                        latest_obj, undefined, marker_id),
-                });
+                // 3, 5
+                const quota_sql = _return_reserve_bucket_quota_query(req.bucket, true);
+                const delete_marker = await MDStore.instance().insert_object_delete_marker_move_latest(latest_obj, quota_sql);
                 return { reply: _get_delete_obj_reply(null, delete_marker) };
             } else {
                 // 5
-                const delete_marker = await _create_delete_marker(req.bucket, {
-                    replaces: false,
-                    insert: marker_id => MDStore.instance().insert_object_delete_marker({
-                        bucket: req.bucket._id,
-                        system: req.system._id,
-                        key: req.rpc_params.key,
-                    }, marker_id),
-                });
+                const quota_sql = _return_reserve_bucket_quota_query(req.bucket, true);
+                const delete_marker = await MDStore.instance().insert_object_delete_marker({
+                    bucket: req.bucket._id,
+                    system: req.system._id,
+                    key: req.rpc_params.key,
+                }, quota_sql);
                 return { reply: _get_delete_obj_reply(null, delete_marker) };
             }
         }
@@ -2729,24 +2711,16 @@ async function _delete_object_only_key(req) {
  * Creating a marker without removing an object can fail with QUOTA_EXCEEDED.
  *
  * @param {object} bucket
- * @param {{ replaces: boolean, insert: (marker_id?: nb.ID) => Promise<object> }} params
+ * @param {boolean} replaces
  */
-async function _create_delete_marker(bucket, { replaces, insert }) {
+async function _return_reserve_bucket_quota_query(bucket, replaces) {
     let marker_id;
     if (strict_quota.is_strict_quota_bucket(bucket)) {
         marker_id = MDStore.instance().make_md_id();
-        if (!replaces) {
+        if (replaces) {
             await quota_usage_cache.check_quota_usage(bucket, { bytes: 0, objects: 1 });
         }
-        await strict_quota.reserve_bucket_quota(bucket, marker_id, { bytes: 0, objects: 1 });
-    }
-    try {
-        return await insert(marker_id);
-    } catch (err) {
-        if (marker_id) {
-            await strict_quota.release_bucket_quota(bucket, marker_id, { bytes: 0, objects: 1 });
-        }
-        throw err;
+        return await strict_quota.reserve_bucket_quota(bucket, marker_id, { bytes: 0, objects: 1 });
     }
 }
 
@@ -2909,7 +2883,7 @@ async function update_bulk_delete_results(objects, object_index_map, results, ob
         const bytes = strict_quota._object_size(obj);
         const num_objects = 1;
         // Release quota for each rows
-        await strict_quota.release_bucket_quota(bucket, obj_md._id, { bytes, objects: num_objects });
+        // await strict_quota.release_bucket_quota(bucket, obj_md._id, { bytes, objects: num_objects });
     }
 }
 
@@ -2949,54 +2923,39 @@ async function _precheck_object_upload_quota(req, info) {
  *   objects?: number,
  *   is_multipart_complete?: boolean,
  * }} params
- * @returns {Promise<{ replaced?: object, bytes: number, objects: number }|undefined>}
+ * @returns {Promise<string>}
  */
 async function reserve_object_upload({ bucket, obj_id, obj_key, size = 0, objects = 0, is_multipart_complete = false }) {
-    if (!strict_quota.is_strict_quota_bucket(bucket)) return;
+    if (!strict_quota.is_strict_quota_bucket(bucket)) return '';
     const bytes = is_multipart_complete ? 0 : size;
     const count = objects || (obj_key ? 1 : 0);
+    let quota_sql = '';
 
     // A new version does not replace any existing version, including a null version
     // left from before versioning was enabled.
     if (bucket.versioning === 'ENABLED') {
         await quota_usage_cache.check_quota_usage(bucket, { bytes, objects: count });
-        await strict_quota.reserve_object_upload(bucket, { _id: obj_id, size: bytes, objects: count });
-        return { bytes, objects: count };
+        quota_sql = await strict_quota.reserve_object_upload(bucket, { _id: obj_id, size: bytes, objects: count });
+        return quota_sql;
     }
 
     const existing = obj_key ? await MDStore.instance().find_object_null_version(bucket._id, obj_key) : undefined;
     console.log("reserve_object_upload ===>", existing?._id, existing?.size, bytes)
     if (existing) {
         // Adjust the shard that holds the null version, not the new object's id.
-        await strict_quota.adjust_object_size(bucket, { _id: existing._id, size: existing.size }, bytes, 0);
-        return { replaced: existing, bytes, objects: 0 };
+        quota_sql = await strict_quota.adjust_object_size(bucket, { _id: existing._id, size: existing.size }, bytes, 0);
+        return quota_sql;
+        //return { replaced: existing, bytes, objects: 0 };
     }
     console.log("reserve_object_upload ===> 111",)
     await quota_usage_cache.check_quota_usage(bucket, { bytes, objects: count });
-    await strict_quota.reserve_object_upload(bucket, { _id: obj_id, size: bytes, objects: count });
-    return { bytes, objects: count };
+
+    quota_sql = await strict_quota.reserve_object_upload(bucket, { _id: obj_id, size: bytes, objects: count });
+    console.log("quota_sql ========%%%%%", quota_sql)
+    return quota_sql;
+    //return { bytes, objects: count };
 }
 
-/**
- * @param {object} bucket
- * @param {object} put_obj
- * @param {{ replaced?: object, bytes: number, objects: number }|undefined} reservation
- */
-async function _rollback_reserved_upload(bucket, put_obj, reservation) {
-    if (!reservation) return;
-    if (reservation.replaced) {
-        const old_size = (typeof reservation.replaced.size === 'number' && reservation.replaced.size >= 0) ?
-            reservation.replaced.size : 0;
-        await strict_quota.adjust_object_size(
-            bucket,
-            { _id: reservation.replaced._id, size: reservation.bytes },
-            old_size,
-            0);
-        return;
-    }
-    const bytes = (typeof reservation.bytes === 'number' && reservation.bytes > 0) ? reservation.bytes : 0;
-    await strict_quota.release_bucket_quota(bucket, put_obj._id, { bytes, objects: reservation.objects || 0 });
-}
 
 // EXPORTS
 // object upload

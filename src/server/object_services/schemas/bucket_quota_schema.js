@@ -11,9 +11,9 @@ module.exports = {
     required: ['_id', 'owner_id', 'shard', 'used_bytes', 'used_objects'],
     properties: {
         _id: {
-            objectid: true // bucket id
+            objectid: true
         },
-        owner_id: {
+        scope_id: {
             objectid: true
         },
         shard: {
@@ -25,5 +25,8 @@ module.exports = {
         used_objects: {
             type: 'integer'
         },
+        scope_type: {
+            type: 'string'
+        }
     }
 };
