@@ -2,9 +2,8 @@
 'use strict';
 
 const dbg = require('../../util/debug_module')(__filename);
-const { RpcError } = require('../../rpc');
 const Quota = require('../system_services/objects/quota');
-const { BucketQuotaStore, PG_BIGINT_MAX } = require('./bucket_quota_store');
+const { QuotaStore, PG_BIGINT_MAX } = require('./quota_store');
 const quota_usage_cache = require('./quota_usage_cache');
 
 function is_strict_quota_bucket(bucket) {
@@ -38,42 +37,33 @@ function _object_size(obj) {
  * is rejected by the WHERE cap (this endpoint or another one would overflow).
  *
  * @param {object} bucket
- * @param {String} object_id
  * @param {{ bytes?: number, objects?: number }} delta
  */
-async function reserve_bucket_quota(bucket, object_id, { bytes = 0, objects = 0 } = {}) {
+async function reserve_bucket_quota(bucket, { bytes = 0, objects = 0 } = {}) {
     if (!is_strict_quota_bucket(bucket)) return;
     if (!bytes && !objects) return;
-    // Cache admit and the bucketquotas update share one queue so concurrent
+    // Cache admit and the quotausages update share one queue so concurrent
     // creates on this server cannot both pass a stale counter.
-    const { limit_bytes, limit_objects } = get_strict_limits(bucket);
-    const quota_sql = await BucketQuotaStore.instance().try_reserve_bucket_quota({
+    const quota_sql = await QuotaStore.instance().try_reserve_bucket_quota({
             bucket_id: bucket._id,
-            object_id,
             delta_bytes: bytes,
             delta_objects: objects,
-            limit_bytes,
-            limit_objects,
         });
     return quota_sql;
 }
 
 /**
  * @param {object} bucket
- * @param {string} object_id
  * @param {{ bytes?: number, objects?: number }} delta
- * @param {boolean?} execute_query
  */
-async function release_bucket_quota(bucket, object_id, { bytes = 0, objects = 0 } = {}, execute_query = false) {
+async function release_bucket_quota(bucket, { bytes = 0, objects = 0 } = {}) {
     if (!is_strict_quota_bucket(bucket)) return;
     if (!bytes && !objects) return;
     try {
-        return await BucketQuotaStore.instance().release_bucket_quota({
+        return await QuotaStore.instance().release_bucket_quota({
             bucket_id: bucket._id,
-            object_id,
             delta_bytes: bytes,
             delta_objects: objects,
-            execute_query
         });
     } catch (err) {
         // Release must not fail the user path (delete/abort). Leak is conservative.
@@ -82,7 +72,7 @@ async function release_bucket_quota(bucket, object_id, { bytes = 0, objects = 0 
 }
 
 /**
- * Latest used_bytes / used_objects from bucketquotas. Missing row is zeros
+ * Latest used_bytes / used_objects from quotausages. Missing row is zeros
  * (fail-closed happens on reserve).
  *
  * @param {object} bucket
@@ -92,7 +82,7 @@ async function read_usage(bucket) {
     if (!is_strict_quota_bucket(bucket)) {
         return { used_bytes: 0, used_objects: 0 };
     }
-    const usage = await BucketQuotaStore.instance().get_usage(bucket._id);
+    const usage = await QuotaStore.instance().get_usage(bucket._id);
     if (!usage) return { used_bytes: 0, used_objects: 0 };
     return usage;
 }
@@ -106,7 +96,7 @@ async function read_usage(bucket) {
  */
 async function reserve_object_upload(bucket, info) {
     const bytes = (typeof info.size === 'number' && info.size >= 0) ? info.size : 0;
-    return await reserve_bucket_quota(bucket, info._id, { bytes, objects: info.objects });
+    return await reserve_bucket_quota(bucket, { bytes, objects: info.objects });
 }
 
 /**
@@ -122,11 +112,11 @@ async function adjust_object_size(bucket, existing_obj, final_size, final_object
     const obj_size = (typeof existing_obj.size === 'number' && existing_obj.size >= 0) ? existing_obj.size : 0;
     final_size = (typeof final_size === 'number' && final_size >= 0) ? final_size : 0;
     const delta = final_size - obj_size;
-    console.log("QQQQQ ====>", { bytes: delta, objects: final_objects })
     if (delta > 0) {
-        return await reserve_bucket_quota(bucket, existing_obj._id, { bytes: delta, objects: final_objects });
+        await quota_usage_cache.check_quota_usage(bucket, { bytes: delta, objects: final_objects });
+        return await reserve_bucket_quota(bucket, { bytes: delta, objects: final_objects });
     } else if (delta < 0 ) {
-        return await release_bucket_quota(bucket, existing_obj._id, { bytes: -delta, objects: final_objects });
+        return await release_bucket_quota(bucket, { bytes: -delta, objects: final_objects });
     }
 }
 
@@ -139,7 +129,7 @@ async function adjust_object_size(bucket, existing_obj, final_size, final_object
 async function release_object_upload(bucket, obj) {
     if (!is_strict_quota_bucket(bucket) || !obj) return;
     const bytes = _object_size(obj);
-    await release_bucket_quota(bucket, obj._id, { bytes, objects: 1 });
+    await release_bucket_quota(bucket, { bytes, objects: 1 });
 }
 
 /**
@@ -150,7 +140,7 @@ async function release_object_upload(bucket, obj) {
 async function release_completed_object(bucket, obj) {
      if (!is_strict_quota_bucket(bucket)) return;
     if (!obj) return;
-    return await release_bucket_quota(bucket, obj._id, { bytes: _object_size(obj), objects: 1 });
+    return await release_bucket_quota(bucket, { bytes: _object_size(obj), objects: 1 });
 }
 
 /**
@@ -167,7 +157,7 @@ async function release_object_rows(bucket, objects) {
         // Delete markers reserve an object slot (size 0) and release that slot here.
         if (!obj || obj.upload_started) continue;
         const bytes = obj.delete_marker ? 0 : _object_size(obj);
-        await release_bucket_quota(bucket, obj._id || object._id, { bytes, objects: 1 });
+        await release_bucket_quota(bucket, { bytes, objects: 1 });
     }
 }
 

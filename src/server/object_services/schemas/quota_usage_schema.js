@@ -6,13 +6,14 @@
  * Intentionally tiny: the hot path is a single-row UPDATE with a WHERE cap.
  */
 module.exports = {
-    $id: 'bucket_quota_schema',
+    $id: 'quota_usage_schema',
     type: 'object',
-    required: ['_id', 'owner_id', 'shard', 'used_bytes', 'used_objects'],
+    required: ['scope_type', 'scope_id', 'shard', 'used_bytes', 'used_objects'],
     properties: {
-        _id: {
+        /*_id: {
             objectid: true
-        },
+        },*/
+        // scope_id is the bucket/scope identifier this shard belongs to
         scope_id: {
             objectid: true
         },

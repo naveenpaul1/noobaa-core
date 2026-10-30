@@ -37,7 +37,7 @@ const KeysSemaphore = require('../../util/keys_semaphore');
 const bucket_semaphore = new KeysSemaphore(1);
 const vector_bucket_semaphore = new KeysSemaphore(1);
 const Quota = require('../system_services/objects/quota');
-const { BucketQuotaStore } = require('../object_services/bucket_quota_store');
+const { QuotaStore } = require('../object_services/quota_store');
 const { STORAGE_CLASS_GLACIER_IR } = require('../../endpoint/s3/s3_utils');
 const noobaa_s3_client = require('../../sdk/noobaa_s3_client/noobaa_s3_client');
 
@@ -1027,7 +1027,7 @@ async function get_bucket_changes_quota(req, bucket, quota_config, single_bucket
         single_bucket_update.$unset = { quota: 1 };
         quota_event.desc = `Bucket quota was removed from ${bucket.name.unwrap()} by ${req.account && req.account.email.unwrap()}`;
         if (prev_quota.is_strict()) {
-            await BucketQuotaStore.instance().delete_usage(bucket._id);
+            await QuotaStore.instance().delete_usage(bucket._id);
         }
     } else {
         if (!quota.is_valid_quota()) throw new RpcError('BAD_REQUEST', 'quota config values must be positive');
@@ -1043,10 +1043,9 @@ async function get_bucket_changes_quota(req, bucket, quota_config, single_bucket
                     throw new RpcError('INVALID_BUCKET_STATE',
                         'Strict quota can only be set on an empty bucket');
                 }
-                await BucketQuotaStore.instance().reset_usage(bucket._id);
             }
         } else if (prev_quota.is_strict()) {
-            await BucketQuotaStore.instance().delete_usage(bucket._id);
+            await QuotaStore.instance().delete_usage(bucket._id);
         }
 
         quota.add_quota_alerts(system_store.data.systems[0]._id, bucket, changes.alerts);
@@ -1253,7 +1252,7 @@ async function delete_bucket(req) {
             system: req.system._id,
             bucket: bucket._id
         });
-        await BucketQuotaStore.instance().delete_usage(bucket._id);
+        await QuotaStore.instance().delete_usage(bucket._id);
     });
 }
 

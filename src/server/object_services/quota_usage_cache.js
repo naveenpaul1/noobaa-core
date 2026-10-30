@@ -6,13 +6,13 @@ const config = require('../../../config');
 const LRUCache = require('../../util/lru_cache');
 const { RpcError } = require('../../rpc');
 const Quota = require('../system_services/objects/quota');
-const { BucketQuotaStore, PG_BIGINT_MAX } = require('./bucket_quota_store');
+const { QuotaStore, PG_BIGINT_MAX } = require('./quota_store');
 
 /**
- * Object-server cache of bucketquotas.used_bytes / used_objects.
+ * Object-server cache of quotausages.used_bytes / used_objects.
  *
  * create_object_upload and create_multipart admit through strict_quota.reserve,
- * which consults this cache instead of SELECTing bucketquotas on every request.
+ * which consults this cache instead of SELECTing quotausages on every request.
  * A local increment after admit lets the next upload on this server see pending
  * usage until the TTL refresh. Deletes and other releases invalidate the entry
  * so the next admit reloads the counter.
@@ -32,7 +32,7 @@ const quota_usage_cache = new LRUCache({
      * @param {{ bucket_id: string }} params
      */
     load: async params => {
-        const usage = await BucketQuotaStore.instance().get_usage(params.bucket_id);
+        const usage = await QuotaStore.instance().get_usage(params.bucket_id);
         return {
             used_bytes: Number(usage && usage.used_bytes) || 0,
             used_objects: Number(usage && usage.used_objects) || 0,
@@ -81,7 +81,6 @@ async function check_quota_usage(bucket, delta = {}) {
     const { limit_bytes, limit_objects } = _limits_from_bucket(bucket);
     const next_bytes = BigInt(usage.used_bytes) + BigInt(bytes);
     const next_objects = BigInt(usage.used_objects) + BigInt(objects);
-    console.log("quota_usage_cache ==> @@@@", usage, "Next values. ===> ",next_bytes, next_objects)
 
     if (next_bytes > BigInt(limit_bytes) || next_objects > BigInt(limit_objects)) {
         dbg.warn('quota_usage_cache: would overflow', bucket_id, {
@@ -92,7 +91,7 @@ async function check_quota_usage(bucket, delta = {}) {
 
 
 /**
- * Drop the cached row so the next admit reloads bucketquotas.
+ * Drop the cached row so the next admit reloads quotausages.
  *
  * @param {object} bucket
  */
